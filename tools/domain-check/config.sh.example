@@ -1,0 +1,62 @@
+# Domain-check shell script configuration.
+#
+# Copy this to `config.sh` next to the scripts and edit values:
+#     cp config.sh.example config.sh
+#     chmod 600 config.sh
+
+# Base URL of the dmnbot API, INCLUDING the /api prefix (no trailing slash).
+# Laravel mounts routes/api.php under /api, so cron endpoints live at /api/cron/*.
+#   Local Herd:  API_BASE="http://dmnbot.test/api"
+#   Production:  API_BASE="https://your-dmnbot-host/api"
+
+# Shared secret. Must match `CRON_API_KEY` in the Laravel .env on the API host.
+CRON_API_KEY="change-me-to-a-long-random-string"
+
+# Working directory for state files. Created if missing.
+# Local macOS / dev (no sudo): leave commented — lib.sh uses tools/domain-check/data
+# Linux production:
+#   WORK_DIR="/var/lib/domain-check"
+#   LOG_DIR="/var/log/domain-check"
+# WORK_DIR="${SCRIPT_DIR}/data"
+# LOG_DIR="${SCRIPT_DIR}/logs"
+
+# Folder where finished domain files are archived (optional; defaults to ${WORK_DIR}/archive).
+# ARCHIVE_DIR="${WORK_DIR}/archive"
+
+# How many domains to process per `check-domains.sh` invocation.
+BATCH_SIZE=100
+
+# Telco labels iterated in order. Edit if you only have a subset.
+# These are the same labels stored in the API (uppercased).
+TELCO_LIST=(DIGI CELCOM HOTLINK UMOBILE UNIFI)
+
+# Cooldown (seconds) after a telco finishes a full pass — gives the operator
+# time to swap SIM / switch network manually before the next telco starts.
+SWITCH_COOLDOWN_SECONDS=120
+
+# Identifier reported back to the API so you can tell probe boxes apart.
+HOST_LABEL="$(hostname -s)"
+
+# Curl options shared across all HTTP probes.
+CURL_TIMEOUT=15
+CURL_MAX_REDIRECTS=5
+
+# Ping settings. Default = 5 probes, 2s wait per reply, packet loss threshold.
+# PING_TIMEOUT is in SECONDS (lib.sh converts to ms on macOS for ping -W).
+PING_COUNT=5
+PING_TIMEOUT=2
+# Treat the host as blocked if packet loss percent >= this value.
+PING_LOSS_BLOCK_THRESHOLD=100
+
+# Patterns (case-insensitive, regex) detected as MCMC / regulator block pages.
+# If the final URL OR the response body matches any of these, the domain is
+# marked blocked with reason=mcmc_redirect.
+MCMC_PATTERNS=(
+    "skmm\\.gov\\.my"
+    "makluman"
+    "mcmc"
+    "blocked"
+)
+
+# How many domains to send per HTTP POST batch to /domain-block-report.
+REPORT_BATCH_SIZE=50
