@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOMAINS_FILE="${SCRIPT_DIR}/data/domains.active.txt"
 
 log() { echo "[a.sh] $*"; }
 
@@ -9,14 +9,12 @@ log() { echo "[a.sh] $*"; }
 log "Pulling latest changes..."
 git -C "${SCRIPT_DIR}" pull
 
-# 2. Run check-domains.sh; if no active domain file, fetch first then retry
-log "Running check-domains.sh..."
-output="$(bash "${SCRIPT_DIR}/check-domains.sh" 2>&1)"
-echo "${output}"
-
-if echo "${output}" | grep -q "No active domain file"; then
+# 2. If no domain file yet, fetch first
+if [[ ! -f "${DOMAINS_FILE}" ]]; then
     log "No domain file found. Running fetch-domains.sh..."
     bash "${SCRIPT_DIR}/fetch-domains.sh"
-    log "Retrying check-domains.sh..."
-    bash "${SCRIPT_DIR}/check-domains.sh"
 fi
+
+# 3. Run check-domains.sh
+log "Running check-domains.sh..."
+bash "${SCRIPT_DIR}/check-domains.sh"
