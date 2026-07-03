@@ -7,7 +7,10 @@ log() { echo "[a.sh] $*"; }
 
 # 1. Pull latest changes
 log "Pulling latest changes..."
-git -C "${SCRIPT_DIR}" pull
+if ! git -C "${SCRIPT_DIR}" pull; then
+    log "GIT PULL FAIL (possible no internet connection or GitHub issue). Aborting."
+    exit 1
+fi
 
 # 2. If no domain file yet, fetch first
 if [[ ! -f "${DOMAINS_FILE}" ]]; then
