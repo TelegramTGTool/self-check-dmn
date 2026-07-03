@@ -8,6 +8,8 @@ log() { echo "[a.sh] $*"; }
 # 1. Pull latest changes
 log "Pulling latest changes..."
 if ! git -C "${SCRIPT_DIR}" pull; then
+    clear
+    sleep 1
     log "GIT PULL FAIL (possible no internet connection or GitHub issue). Aborting."
     exit 1
 fi
