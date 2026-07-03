@@ -217,6 +217,7 @@ if (( NEW_POINTER >= TOTAL_LINES )); then
         NEXT_TELCO="${CURRENT_TELCOS[${NEXT_INDEX}]}"
         clear
         sleep 1
+        log ""
         log "CHANGING TO NEXT TELCO ${NEXT_TELCO}. PLEASE WAIT $(( SWITCH_COOLDOWN_SECONDS / 60 ))MINS."
         state_set TELCO_INDEX     "${NEXT_INDEX}"
         state_set POINTER         "0"
@@ -263,6 +264,7 @@ if (( NEW_POINTER >= TOTAL_LINES )); then
         if api_post_json "/cron/domain-check-summary" "${summary_payload}" >/dev/null; then
             clear
             sleep 1
+            log ""
             log "DONE CHECK AND SUMMARY STATISTIC SENT"
         else
             log "WARN: failed to POST summary. Archiving anyway; you can replay from state file."
@@ -278,5 +280,6 @@ if (( NEW_POINTER >= TOTAL_LINES )); then
 else
     clear
     sleep 1
+    log ""
     log "CONTINUE NEXT BATCH. Pointer=${NEW_POINTER}/${TOTAL_LINES}."
 fi

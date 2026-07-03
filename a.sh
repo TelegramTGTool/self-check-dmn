@@ -4,12 +4,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOMAINS_FILE="${SCRIPT_DIR}/data/domains.active.txt"
 
 log() { echo "[a.sh] $*"; }
-
+clear
+sleep 1
+log ""
 # 1. Pull latest changes
 log "Pulling latest changes..."
 if ! git -C "${SCRIPT_DIR}" pull; then
     clear
     sleep 1
+    log ""
     log "GIT PULL FAIL (possible no internet connection or GitHub issue). Aborting."
     exit 1
 fi
