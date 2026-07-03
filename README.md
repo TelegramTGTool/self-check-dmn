@@ -32,17 +32,17 @@ This depends on these pieces in dmnbot:
 
   | Endpoint                                  | Method | Purpose                                       |
   | ----------------------------------------- | ------ | --------------------------------------------- |
-  | `/api/cron/domain-list?format=text`       | GET    | Active merchants → `mid|role|host` per line.  |
+  | `/api/cron/domain-list?format=text`       | GET    | Active merchants → `mid|host` per line.       |
   | `/api/cron/domain-block-report`           | POST   | Bulk upsert of blocked / cleared domains.     |
   | `/api/cron/domain-check-stats`            | POST   | Per-telco round stats.                         |
   | `/api/cron/domain-check-summary`          | POST   | Final summary after all telcos done.           |
 
 `domain-list` is **global** — it returns active merchants across **all
-companies** (`merchant_status = 1`). Each merchant's `web_url` is a
-comma-separated host list: the **first** host is emitted as `role=primary` and
-every remaining distinct host as `role=backup`. Block
+companies** (`merchant_status = 1`). Each merchant's URLs are stored as
+individual rows in `merchant_urls` (dmnbot) and emitted as one
+`merchant_id|host` line per URL, with no primary/backup distinction. Block
 reporting is **record-only**: it upserts status into
-`merchant_domain_block_status` and does **not** change `merchants.web_url`.
+`merchant_domain_block_status` and does **not** change `merchant_urls`.
 
 Set `API_BASE` in `config.sh` to include the `/api` prefix (e.g.
 `http://dmnbot.test/api`).
@@ -102,7 +102,7 @@ echo 'net.ipv4.ping_group_range=0 2147483647' | sudo tee /etc/sysctl.d/99-ping.c
    * If `POINTER == 0` and the current telco hasn't been announced yet, it
      prints `RUNNING DOMAIN CHECK WITH TELCO X` and records `TELCO_STARTED_AT`.
    * Reads `BATCH_SIZE` (default 100) lines from the pointer.
-   * For each `merchant_id|role|host` line:
+   * For each `merchant_id|host` line:
      * Runs `ping -c PING_COUNT` and parses packet-loss %.
      * If loss ≥ `PING_LOSS_BLOCK_THRESHOLD` (100% by default) → blocked
        (`reason=ping_loss`).

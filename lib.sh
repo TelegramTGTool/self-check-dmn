@@ -160,6 +160,10 @@ acquire_lock() {
 # CHECK_LOSS_PCT, CHECK_HTTP_CODE
 check_one_domain() {
     local host="$1"
+    # Strip scheme and any trailing path so ping/curl receive a bare host.
+    host="${host#https://}"
+    host="${host#http://}"
+    host="${host%%/*}"
     CHECK_RESULT="ok"
     CHECK_REASON=""
     CHECK_EVIDENCE=""

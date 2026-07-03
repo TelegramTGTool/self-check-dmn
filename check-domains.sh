@@ -134,7 +134,7 @@ flush_blocks() {
 }
 
 if [[ -n "${BATCH_LINES}" ]]; then
-    while IFS='|' read -r merchant_id role host; do
+    while IFS='|' read -r merchant_id host; do
         [[ -z "${host}" ]] && continue
         check_one_domain "${host}"
         batch_count=$(( batch_count + 1 ))
@@ -143,13 +143,12 @@ if [[ -n "${BATCH_LINES}" ]]; then
             new_blocks=$(( new_blocks + 1 ))
 
             ts="$(date '+%Y-%m-%d %H:%M:%S')"
-            remark="[${ts}] BLOCKED telco=${CURRENT_TELCO} mid=${merchant_id} role=${role} host=${host} reason=${CHECK_REASON} ${CHECK_EVIDENCE}"
+            remark="[${ts}] BLOCKED telco=${CURRENT_TELCO} mid=${merchant_id} host=${host} reason=${CHECK_REASON} ${CHECK_EVIDENCE}"
             echo "${remark}" >> "${REMARKS_FILE}"
 
             json="{"
             json+="\"merchant_id\":${merchant_id},"
             json+="\"domain\":\"$(json_escape "${host}")\","
-            json+="\"role\":\"$(json_escape "${role}")\","
             json+="\"telco\":\"$(json_escape "${CURRENT_TELCO}")\","
             json+="\"status\":\"blocked\","
             json+="\"reason\":\"$(json_escape "${CHECK_REASON}")\","

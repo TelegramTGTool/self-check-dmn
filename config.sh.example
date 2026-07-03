@@ -32,7 +32,7 @@ TELCO_LIST=(DIGI CELCOM HOTLINK UMOBILE UNIFI)
 
 # Cooldown (seconds) after a telco finishes a full pass — gives the operator
 # time to swap SIM / switch network manually before the next telco starts.
-SWITCH_COOLDOWN_SECONDS=120
+SWITCH_COOLDOWN_SECONDS=10
 
 # Identifier reported back to the API so you can tell probe boxes apart.
 HOST_LABEL="$(hostname -s)"
@@ -53,9 +53,7 @@ PING_LOSS_BLOCK_THRESHOLD=100
 # marked blocked with reason=mcmc_redirect.
 MCMC_PATTERNS=(
     "skmm\\.gov\\.my"
-    "makluman"
     "mcmc"
-    "blocked"
 )
 
 # How many domains to send per HTTP POST batch to /domain-block-report.
