@@ -175,7 +175,7 @@ TELCO_BLOCK_COUNT=$(( TELCO_BLOCK_COUNT + new_blocks ))
 state_set POINTER           "${NEW_POINTER}"
 state_set TELCO_BLOCK_COUNT "${TELCO_BLOCK_COUNT}"
 
-log "Processed ${batch_count} domains this run (telco=${CURRENT_TELCO}, blocked_in_batch=${new_blocks}, telco_total_blocks=${TELCO_BLOCK_COUNT}, pointer=${NEW_POINTER}/${TOTAL_LINES})"
+log "PROCESSED BATCH ${batch_count} domains this run (telco=${CURRENT_TELCO}, blocked_in_batch=${new_blocks}, telco_total_blocks=${TELCO_BLOCK_COUNT}, pointer=${NEW_POINTER}/${TOTAL_LINES})"
 
 # Telco completed?
 if (( NEW_POINTER >= TOTAL_LINES )); then
@@ -271,4 +271,6 @@ if (( NEW_POINTER >= TOTAL_LINES )); then
         [[ -f "${STATE_FILE}"   ]] && mv "${STATE_FILE}"   "${ARCHIVE_DIR}/${archive_name}.state"
         log "Archived to ${ARCHIVE_DIR}/${archive_name}"
     fi
+else
+    log "CONTINUE NEXT BATCH. Pointer=${NEW_POINTER}/${TOTAL_LINES}."
 fi
