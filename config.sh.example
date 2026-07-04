@@ -48,13 +48,8 @@ PING_TIMEOUT=2
 # Treat the host as blocked if packet loss percent >= this value.
 PING_LOSS_BLOCK_THRESHOLD=100
 
-# Patterns (case-insensitive, regex) detected as MCMC / regulator block pages.
-# If the final URL OR the response body matches any of these, the domain is
-# marked blocked with reason=mcmc_redirect.
-MCMC_PATTERNS=(
-    "skmm\\.gov\\.my"
-    "mcmc"
-)
+# MCMC block-detection patterns/IPs now live at the top of check-domains.sh
+# (edit there directly, no config.sh change needed).
 
 # How many domains to send per HTTP POST batch to /domain-block-report.
 REPORT_BATCH_SIZE=50

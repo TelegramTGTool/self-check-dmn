@@ -36,6 +36,17 @@ load_config() {
         TELCO_LIST=(DIGI CELCOM HOTLINK UMOBILE UNIFI)
     fi
 
+    # MCMC_PATTERNS / MCMC_BLOCK_IPS are normally defined at the top of
+    # check-domains.sh (before load_config runs). Fall back to safe defaults
+    # here so other callers (e.g. fetch-domains.sh) that don't need them
+    # still work under `set -u`.
+    if [[ -z "${MCMC_PATTERNS+x}" || ${#MCMC_PATTERNS[@]} -eq 0 ]]; then
+        MCMC_PATTERNS=("skmm\\.gov\\.my" "mcmc")
+    fi
+    if [[ -z "${MCMC_BLOCK_IPS+x}" || ${#MCMC_BLOCK_IPS[@]} -eq 0 ]]; then
+        MCMC_BLOCK_IPS=("175.139.142.25")
+    fi
+
     if ! mkdir -p "${WORK_DIR}" "${ARCHIVE_DIR}" "${LOG_DIR}" 2>/dev/null; then
         # e.g. config still points at /var/lib/... without sudo on macOS
         WORK_DIR="${SCRIPT_DIR}/data"
@@ -188,6 +199,21 @@ check_one_domain() {
     fi
     CHECK_LOSS_PCT="${loss}"
 
+    # Resolved IP is on the first "PING host (1.2.3.4)..." line. If it lands on a
+    # known MCMC sinkhole IP, flag it regardless of packet loss.
+    local resolved_ip block_ip
+    resolved_ip="$(printf '%s\n' "${ping_out}" | sed -n '1s/.*(\([0-9]*\.[0-9]*\.[0-9]*\.[0-9]*\)).*/\1/p')"
+    if [[ -n "${resolved_ip}" ]]; then
+        for block_ip in "${MCMC_BLOCK_IPS[@]}"; do
+            if [[ "${resolved_ip}" == "${block_ip}" ]]; then
+                CHECK_RESULT="blocked"
+                CHECK_REASON="mcmc_block_ip"
+                CHECK_EVIDENCE="ip=${resolved_ip}"
+                return
+            fi
+        done
+    fi
+
     if (( loss >= PING_LOSS_BLOCK_THRESHOLD )); then
         CHECK_RESULT="blocked"
         CHECK_REASON="ping_loss"
@@ -237,7 +263,7 @@ check_one_domain() {
         return
     fi
 
-    if [[ "${code}" == "0" ]]; then
+    if (( 10#${code:-0} == 0 )); then
         CHECK_RESULT="unknown"
         CHECK_REASON="http_error"
         CHECK_EVIDENCE="curl_failed"

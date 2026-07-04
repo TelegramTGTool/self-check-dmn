@@ -34,6 +34,26 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "${SCRIPT_DIR}/lib.sh"
+
+# ----- MCMC block detection --------------------------------------------------
+# Edit these directly (no config.sh change needed) to tune live without
+# touching the shared config file.
+#
+# Patterns (case-insensitive, regex) detected as MCMC / regulator block pages.
+# If the final URL OR the response body matches any of these, the domain is
+# marked blocked with reason=mcmc_redirect.
+MCMC_PATTERNS=(
+    "skmm\\.gov\\.my"
+    "mcmc"
+)
+
+# Known MCMC / regulator sinkhole IPs. If ping resolves the host to one of
+# these, the domain is marked blocked with reason=mcmc_block_ip, regardless
+# of packet loss.
+MCMC_BLOCK_IPS=(
+    "175.139.142.25"
+)
+
 load_config
 
 acquire_lock
@@ -138,6 +158,8 @@ if [[ -n "${BATCH_LINES}" ]]; then
         [[ -z "${host}" ]] && continue
         check_one_domain "${host}"
         batch_count=$(( batch_count + 1 ))
+
+        log "CHECK telco=${CURRENT_TELCO} mid=${merchant_id} host=${host} result=${CHECK_RESULT} reason=${CHECK_REASON} evidence=${CHECK_EVIDENCE}"
 
         if [[ "${CHECK_RESULT}" == "blocked" ]]; then
             new_blocks=$(( new_blocks + 1 ))

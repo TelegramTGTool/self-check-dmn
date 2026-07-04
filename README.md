@@ -104,12 +104,15 @@ echo 'net.ipv4.ping_group_range=0 2147483647' | sudo tee /etc/sysctl.d/99-ping.c
    * Reads `BATCH_SIZE` (default 100) lines from the pointer.
    * For each `merchant_id|host` line:
      * Runs `ping -c PING_COUNT` and parses packet-loss %.
+     * If the resolved IP matches one of `MCMC_BLOCK_IPS` (edit these at the
+       top of `check-domains.sh`, no `config.sh` change needed) → blocked
+       (`reason=mcmc_block_ip`), regardless of packet loss.
      * If loss ≥ `PING_LOSS_BLOCK_THRESHOLD` (100% by default) → blocked
        (`reason=ping_loss`).
      * Otherwise runs `curl -L` against `https://host/` (falls back to
        `http://`), inspects the final URL and the response body for any of
-       the configured `MCMC_PATTERNS`. A match → blocked
-       (`reason=mcmc_redirect`).
+       the configured `MCMC_PATTERNS` (also at the top of `check-domains.sh`).
+       A match → blocked (`reason=mcmc_redirect`).
      * On block: appends a one-line remark to
        `domains.active.txt.remarks` and queues a JSON payload.
    * Flushes blocked entries in batches of `REPORT_BATCH_SIZE` to
