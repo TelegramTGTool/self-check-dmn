@@ -171,7 +171,7 @@ if [[ -n "${BATCH_LINES}" ]]; then
         check_one_domain "${host}"
         batch_count=$(( batch_count + 1 ))
 
-        log "CHECK telco=${CURRENT_TELCO} mid=${merchant_id} host=${host} result=${CHECK_RESULT} reason=${CHECK_REASON} evidence=${CHECK_EVIDENCE}"
+        log "CHECK [$(( POINTER + batch_count ))/${TOTAL_LINES}] telco=${CURRENT_TELCO} mid=${merchant_id} host=${host} result=${CHECK_RESULT} reason=${CHECK_REASON} evidence=${CHECK_EVIDENCE}"
 
         if [[ "${CHECK_RESULT}" == "blocked" ]]; then
             new_blocks=$(( new_blocks + 1 ))

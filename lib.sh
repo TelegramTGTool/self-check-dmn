@@ -221,21 +221,16 @@ check_one_domain() {
         return
     fi
 
-    # ---- Step 2: HTTP probe (https first, then http fallback)
-    local http_out scheme code final_url body_file
+    # ---- Step 2: HTTPS probe only
+    local http_out code final_url body_file
     body_file="$(mktemp)"
-    for scheme in https http; do
-        http_out="$(curl -sS \
-            --max-time "${CURL_TIMEOUT}" \
-            --max-redirs "${CURL_MAX_REDIRECTS}" \
-            -L \
-            -o "${body_file}" \
-            -w '%{http_code}|%{url_effective}' \
-            "${scheme}://${host}/" 2>/dev/null || true)"
-        if [[ -n "${http_out}" ]]; then
-            break
-        fi
-    done
+    http_out="$(curl -sS \
+        --max-time "${CURL_TIMEOUT}" \
+        --max-redirs "${CURL_MAX_REDIRECTS}" \
+        -L \
+        -o "${body_file}" \
+        -w '%{http_code}|%{url_effective}' \
+        "https://${host}/" 2>/dev/null || true)"
 
     code="${http_out%%|*}"
     final_url="${http_out#*|}"
