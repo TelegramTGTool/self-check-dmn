@@ -27,7 +27,7 @@ load_config() {
     : "${HOST_LABEL:=$(hostname -s)}"
     : "${CURL_TIMEOUT:=15}"
     : "${CURL_MAX_REDIRECTS:=5}"
-    : "${PING_COUNT:=5}"
+    : "${PING_COUNT:=2}"
     : "${PING_TIMEOUT:=2}"
     : "${PING_LOSS_BLOCK_THRESHOLD:=100}"
     : "${REPORT_BATCH_SIZE:=50}"
