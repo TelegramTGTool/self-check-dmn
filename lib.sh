@@ -23,7 +23,7 @@ load_config() {
     : "${ARCHIVE_DIR:=${WORK_DIR}/archive}"
     : "${LOG_DIR:=${SCRIPT_DIR}/logs}"
     : "${BATCH_SIZE:=100}"
-    : "${SWITCH_COOLDOWN_SECONDS:=120}"
+    : "${SWITCH_COOLDOWN_SECONDS:=1}"
     : "${HOST_LABEL:=$(hostname -s)}"
     : "${CURL_TIMEOUT:=15}"
     : "${CURL_MAX_REDIRECTS:=5}"
