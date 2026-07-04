@@ -215,8 +215,9 @@ if (( NEW_POINTER >= TOTAL_LINES )); then
     NEXT_INDEX=$(( TELCO_INDEX + 1 ))
     if (( NEXT_INDEX < TOTAL_TELCOS )); then
         NEXT_TELCO="${CURRENT_TELCOS[${NEXT_INDEX}]}"
+        sleep 3
         clear
-        sleep 1
+        sleep 3
         log ""
         log "CHANGING TO NEXT TELCO ${NEXT_TELCO}. PLEASE WAIT $(( SWITCH_COOLDOWN_SECONDS / 60 ))MINS."
         state_set TELCO_INDEX     "${NEXT_INDEX}"
@@ -262,8 +263,9 @@ if (( NEW_POINTER >= TOTAL_LINES )); then
         summary_payload+="\"host_label\":\"$(json_escape "${HOST_LABEL}")\""
         summary_payload+="}"
         if api_post_json "/cron/domain-check-summary" "${summary_payload}" >/dev/null; then
+            sleep 3
             clear
-            sleep 1
+            sleep 3
             log ""
             log "DONE CHECK AND SUMMARY STATISTIC SENT"
         else
@@ -278,8 +280,9 @@ if (( NEW_POINTER >= TOTAL_LINES )); then
         log "Archived to ${ARCHIVE_DIR}/${archive_name}"
     fi
 else
+    sleep 3
     clear
-    sleep 1
+    sleep 3
     log ""
     log "CONTINUE NEXT BATCH. Pointer=${NEW_POINTER}/${TOTAL_LINES}."
 fi

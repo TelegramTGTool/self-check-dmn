@@ -5,13 +5,14 @@ DOMAINS_FILE="${SCRIPT_DIR}/data/domains.active.txt"
 
 log() { echo "[a.sh] $*"; }
 clear
-sleep 1
+sleep 3
 log ""
 # 1. Pull latest changes
 log "Pulling latest changes..."
 if ! git -C "${SCRIPT_DIR}" pull; then
+    sleep 3
     clear
-    sleep 1
+    sleep 3
     log ""
     log "GIT PULL FAIL (possible no internet connection or GitHub issue). Aborting."
     exit 1
