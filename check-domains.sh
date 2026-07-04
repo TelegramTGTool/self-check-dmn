@@ -59,12 +59,20 @@ load_config
 acquire_lock
 
 if [[ ! -f "${DOMAINS_FILE}" ]]; then
+    sleep 2
+    clear
+    sleep 2
+    log ""
     log "No active domain file (${DOMAINS_FILE}). Run fetch-domains.sh first. Skipping."
     exit 0
 fi
 
 DONE="$(state_get DONE)"
 if [[ "${DONE}" == "1" ]]; then
+    sleep 2
+    clear
+    sleep 2
+    log ""
     log "Active file is already marked DONE. Awaiting fetch-domains.sh to start a new run."
     exit 0
 fi
@@ -75,6 +83,10 @@ SWITCH_UNTIL="${SWITCH_UNTIL:-0}"
 NOW_EPOCH="$(date +%s)"
 if (( NOW_EPOCH < SWITCH_UNTIL )); then
     remaining=$(( SWITCH_UNTIL - NOW_EPOCH ))
+    sleep 2
+    clear
+    sleep 2
+    log ""
     log "Telco-switch cooldown active. ${remaining}s remaining. Skipping."
     exit 0
 fi
