@@ -217,7 +217,11 @@ if (( NEW_POINTER >= TOTAL_LINES )); then
     TELCO_ENDED_EPOCH="$(date +%s)"
     duration=$(( TELCO_ENDED_EPOCH - TELCO_STARTED_EPOCH ))
 
-    # POST per-telco stats.
+    # POST per-telco stats, including the full list of domains scanned this
+    # telco run (DOMAINS_FILE holds the same merchant_id|host lines for every
+    # telco in this run, and is only archived once all telcos are done).
+    DOMAINS_JSON="$(build_domains_json "${DOMAINS_FILE}")"
+
     stats_payload="{"
     stats_payload+="\"run_id\":\"$(json_escape "${RUN_ID}")\","
     stats_payload+="\"telco\":\"$(json_escape "${CURRENT_TELCO}")\","
@@ -228,10 +232,11 @@ if (( NEW_POINTER >= TOTAL_LINES )); then
     stats_payload+="\"started_at\":\"$(json_escape "${TELCO_STARTED_AT}")\","
     stats_payload+="\"ended_at\":\"$(json_escape "${TELCO_ENDED_AT}")\","
     stats_payload+="\"source_file\":\"$(json_escape "$(basename "${DOMAINS_FILE}")")\","
-    stats_payload+="\"host_label\":\"$(json_escape "${HOST_LABEL}")\""
+    stats_payload+="\"host_label\":\"$(json_escape "${HOST_LABEL}")\","
+    stats_payload+="\"domains\":${DOMAINS_JSON}"
     stats_payload+="}"
-    if api_post_json "/cron/domain-check-stats" "${stats_payload}" >/dev/null; then
-        log "Posted per-telco stats for ${CURRENT_TELCO} (blocks=${TELCO_BLOCK_COUNT}, duration=${duration}s)."
+    if api_post_json "/cron/domain-check-stats" "${stats_payload}" 180 >/dev/null; then
+        log "Posted per-telco stats for ${CURRENT_TELCO} (blocks=${TELCO_BLOCK_COUNT}, duration=${duration}s, domains=${TOTAL_LINES})."
     else
         log "WARN: failed to POST per-telco stats for ${CURRENT_TELCO}."
     fi

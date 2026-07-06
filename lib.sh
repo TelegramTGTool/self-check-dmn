@@ -119,8 +119,9 @@ api_get_text() {
 api_post_json() {
     local path="$1"
     local payload="$2"
+    local timeout="${3:-60}"
     curl -fsS \
-        --max-time 60 \
+        --max-time "${timeout}" \
         -H "X-CRON-KEY: ${CRON_API_KEY}" \
         -H 'Content-Type: application/json' \
         -X POST \
@@ -268,6 +269,21 @@ check_one_domain() {
     CHECK_RESULT="ok"
     CHECK_REASON="ok"
     CHECK_EVIDENCE="code=${code}"
+}
+
+# ----- Build JSON array of {"merchant_id":N,"domain":"host"} from a
+# "merchant_id|host" lines file (e.g. the active domains file for a
+# just-completed telco run). -------------------------------------------------
+build_domains_json() {
+    local file="$1"
+    local -a entries=()
+    local merchant_id host
+    while IFS='|' read -r merchant_id host; do
+        [[ -z "${host}" ]] && continue
+        entries+=("{\"merchant_id\":${merchant_id},\"domain\":\"$(json_escape "${host}")\"}")
+    done < "${file}"
+    local IFS=,
+    echo "[${entries[*]:-}]"
 }
 
 # ----- JSON helper (no jq required) ------------------------------------------
