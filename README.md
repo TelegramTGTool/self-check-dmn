@@ -33,6 +33,7 @@ This depends on these pieces in dmnbot:
   | Endpoint                                  | Method | Purpose                                       |
   | ----------------------------------------- | ------ | --------------------------------------------- |
   | `/api/cron/domain-list?format=text`       | GET    | Active merchants → `mid|host` per line.       |
+  |   `&offset=N&limit=M`                     |        | Optional: slice the pool (see below).         |
   | `/api/cron/domain-block-report`           | POST   | Bulk upsert of blocked / cleared domains.     |
   | `/api/cron/domain-check-stats`            | POST   | Per-telco round stats.                         |
   | `/api/cron/domain-check-summary`          | POST   | Final summary after all telcos done.           |
@@ -49,6 +50,27 @@ Set `API_BASE` in `config.sh` to include the `/api` prefix (e.g.
 
 Auth: send the secret as `X-CRON-KEY: <secret>` (or `?key=<secret>`). The
 secret must match `CRON_API_KEY` in the Laravel `.env` on the API host.
+
+### Running multiple checkers concurrently
+
+`domain-list` returns a stably-ordered (`merchants.id`, then `merchant_urls.id`)
+list, so `offset`/`limit` slice it deterministically. To run several checker
+instances against the same pool without them grabbing the same domains:
+
+1. Copy this whole directory (or just `config.sh`) once per instance, each
+   pointing at its own `WORK_DIR` (so state/lock/domains files don't collide).
+2. Give each instance a non-overlapping `FETCH_OFFSET` / `FETCH_LIMIT` in its
+   `config.sh`, e.g.:
+   * Instance A: `FETCH_OFFSET=0   FETCH_LIMIT=300` (domains 1-300)
+   * Instance B: `FETCH_OFFSET=300 FETCH_LIMIT=300` (domains 301-600)
+   * Instance C: `FETCH_OFFSET=600` (no limit — domain 601 to end of pool)
+3. Run each instance's `fetch-domains.sh` / `check-domains.sh` on its own
+   cron schedule as usual.
+
+The API also returns the pre-slice pool size via the `X-Total-Domains`
+response header, so `fetch-domains.sh` logs it and — if an instance's
+`FETCH_OFFSET` has moved past the end of a shrinking pool — skips cleanly
+instead of treating "0 domains at my offset" as a fatal error.
 
 ## Server installation
 

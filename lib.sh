@@ -23,6 +23,8 @@ load_config() {
     : "${ARCHIVE_DIR:=${WORK_DIR}/archive}"
     : "${LOG_DIR:=${SCRIPT_DIR}/logs}"
     : "${BATCH_SIZE:=100}"
+    : "${FETCH_OFFSET:=0}"
+    : "${FETCH_LIMIT:=}"
     : "${SWITCH_COOLDOWN_SECONDS:=1}"
     : "${HOST_LABEL:=$(hostname -s)}"
     : "${CURL_TIMEOUT:=15}"
@@ -112,6 +114,18 @@ api_get_text() {
     local path="$1"
     curl -fsS \
         --max-time 60 \
+        -H "X-CRON-KEY: ${CRON_API_KEY}" \
+        "${API_BASE}${path}"
+}
+
+# Same as api_get_text, but also dumps response headers to ${2} (so callers
+# can read informational headers like X-Total-Domains).
+api_get_text_with_headers() {
+    local path="$1"
+    local headers_file="$2"
+    curl -fsS \
+        --max-time 60 \
+        -D "${headers_file}" \
         -H "X-CRON-KEY: ${CRON_API_KEY}" \
         "${API_BASE}${path}"
 }

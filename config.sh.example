@@ -24,7 +24,19 @@ CRON_API_KEY="change-me-to-a-long-random-string"
 # ARCHIVE_DIR="${WORK_DIR}/archive"
 
 # How many domains to process per `check-domains.sh` invocation.
-BATCH_SIZE=100
+BATCH_SIZE=300
+
+# Slice of the full active-domain pool this instance fetches from the API
+# (GET /cron/domain-list?offset=...&limit=...). Use this to run multiple
+# checkers concurrently against the same pool without duplicating work —
+# give each instance its own config.sh (and its own WORK_DIR) with a
+# non-overlapping range, e.g.:
+#   Instance A: FETCH_OFFSET=0   FETCH_LIMIT=300   (domains 1-300)
+#   Instance B: FETCH_OFFSET=300 FETCH_LIMIT=300   (domains 301-600)
+#   Instance C: FETCH_OFFSET=600                   (domain 601 to end)
+# FETCH_LIMIT empty/unset = "to the end of the pool".
+FETCH_OFFSET=0
+FETCH_LIMIT=50
 
 # Telco labels iterated in order. Edit if you only have a subset.
 # These are the same labels stored in the API (uppercased).
@@ -38,12 +50,12 @@ SWITCH_COOLDOWN_SECONDS=10
 HOST_LABEL="$(hostname -s)"
 
 # Curl options shared across all HTTP probes.
-CURL_TIMEOUT=15
-CURL_MAX_REDIRECTS=5
+CURL_TIMEOUT=2
+CURL_MAX_REDIRECTS=2
 
 # Ping settings. Default = 5 probes, 2s wait per reply, packet loss threshold.
 # PING_TIMEOUT is in SECONDS (lib.sh converts to ms on macOS for ping -W).
-PING_COUNT=5
+PING_COUNT=2
 PING_TIMEOUT=2
 # Treat the host as blocked if packet loss percent >= this value.
 PING_LOSS_BLOCK_THRESHOLD=100
@@ -52,4 +64,4 @@ PING_LOSS_BLOCK_THRESHOLD=100
 # (edit there directly, no config.sh change needed).
 
 # How many domains to send per HTTP POST batch to /domain-block-report.
-REPORT_BATCH_SIZE=50
+REPORT_BATCH_SIZE=100
