@@ -143,6 +143,29 @@ api_post_json() {
         "${API_BASE}${path}"
 }
 
+# Same as api_post_json, but retries on failure (network error, timeout, or
+# non-2xx response) up to max_retries times with a short backoff between
+# attempts. Prints the response body of the successful attempt on stdout.
+api_post_json_retry() {
+    local path="$1"
+    local payload="$2"
+    local timeout="${3:-60}"
+    local max_retries="${4:-3}"
+    local attempt=1 out
+    while (( attempt <= max_retries )); do
+        if out="$(api_post_json "${path}" "${payload}" "${timeout}")"; then
+            printf '%s' "${out}"
+            return 0
+        fi
+        if (( attempt < max_retries )); then
+            log "WARN: POST ${path} failed (attempt ${attempt}/${max_retries}). Retrying in 5s."
+            sleep 5
+        fi
+        attempt=$(( attempt + 1 ))
+    done
+    return 1
+}
+
 # ----- Lock (mkdir + pid; works on macOS and Linux without flock) -------------
 release_lock() {
     rm -rf "${LOCK_FILE}.dir"

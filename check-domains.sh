@@ -235,10 +235,10 @@ if (( NEW_POINTER >= TOTAL_LINES )); then
     stats_payload+="\"host_label\":\"$(json_escape "${HOST_LABEL}")\","
     stats_payload+="\"domains\":${DOMAINS_JSON}"
     stats_payload+="}"
-    if api_post_json "/cron/domain-check-stats" "${stats_payload}" 180 >/dev/null; then
+    if api_post_json_retry "/cron/domain-check-stats" "${stats_payload}" 180 3 >/dev/null; then
         log "Posted per-telco stats for ${CURRENT_TELCO} (blocks=${TELCO_BLOCK_COUNT}, duration=${duration}s, domains=${TOTAL_LINES})."
     else
-        log "WARN: failed to POST per-telco stats for ${CURRENT_TELCO}."
+        log "WARN: failed to POST per-telco stats for ${CURRENT_TELCO} after 3 attempts."
     fi
 
     # Append to SUMMARY_PER_TELCO (semicolon-separated triplets).
@@ -301,14 +301,14 @@ if (( NEW_POINTER >= TOTAL_LINES )); then
         summary_payload+="\"source_file\":\"$(json_escape "$(basename "${DOMAINS_FILE}")")\","
         summary_payload+="\"host_label\":\"$(json_escape "${HOST_LABEL}")\""
         summary_payload+="}"
-        if api_post_json "/cron/domain-check-summary" "${summary_payload}" >/dev/null; then
+        if api_post_json_retry "/cron/domain-check-summary" "${summary_payload}" 60 3 >/dev/null; then
             sleep 3
             clear
             sleep 3
             log ""
             log "DONE CHECK AND SUMMARY STATISTIC SENT"
         else
-            log "WARN: failed to POST summary. Archiving anyway; you can replay from state file."
+            log "WARN: failed to POST summary after 3 attempts. Archiving anyway; you can replay from state file."
         fi
 
         # Archive.
