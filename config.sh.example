@@ -38,6 +38,15 @@ BATCH_SIZE=300
 FETCH_OFFSET=0
 FETCH_LIMIT=50
 
+# Country pool this instance checks (GET /cron/domain-list?country=...).
+# The checker probes from inside one country, so it must only be handed the
+# merchants registered for that country. Known values come from
+# config/merchants.php on the API host: Malaysia, Australia.
+# Empty/unset = let the API use its own default (Malaysia).
+# Note the country filter runs BEFORE offset/limit, so each country has its
+# own pool numbered from 0 — don't carry offsets across countries.
+FETCH_COUNTRY="Malaysia"
+
 # Telco labels iterated in order. Edit if you only have a subset.
 # These are the same labels stored in the API (uppercased).
 TELCO_LIST=(DIGI CELCOM HOTLINK UMOBILE UNIFI)
@@ -50,18 +59,119 @@ SWITCH_COOLDOWN_SECONDS=10
 HOST_LABEL="$(hostname -s)"
 
 # Curl options shared across all HTTP probes.
+#
+# Probes are HEAD requests that follow redirects and read only the final url +
+# status — the page body is never downloaded. Domains like these serve ~800 KB
+# single-page fronts, so this is the difference between ~320 MB and ~120 KB per
+# full pass over the list.
 CURL_TIMEOUT=2
+CURL_CONNECT_TIMEOUT=2
 CURL_MAX_REDIRECTS=2
+# Status codes meaning "this server will not answer HEAD". The probe retries
+# those once as GET with the body discarded, so a verdict never depends on
+# HEAD support.
+HEAD_FALLBACK_CODES="405 501"
+# Bytes to read when checking for an ISP that serves its block notice INLINE at
+# the original url (200, no redirect) instead of redirecting. 0 = disabled,
+# which keeps every clean domain at header-only cost. 65536 is a sensible value
+# if you find an ISP that does this — real block pages are tiny.
+BLOCK_BODY_PROBE_BYTES=0
 
 # Ping settings. Default = 5 probes, 2s wait per reply, packet loss threshold.
 # PING_TIMEOUT is in SECONDS (lib.sh converts to ms on macOS for ping -W).
 PING_COUNT=2
 PING_TIMEOUT=2
-# Treat the host as blocked if packet loss percent >= this value.
-PING_LOSS_BLOCK_THRESHOLD=100
+# Block on packet loss >= this percent. Above 100 = disabled, which is the
+# default: CDNs and firewalls drop ICMP wholesale, so a loss-based verdict
+# marks large numbers of perfectly reachable hosts as blocked. Ping's job is
+# reading the RESOLVED IP so a regulator DNS redirect to a sinkhole
+# (MCMC_BLOCK_IPS) can be caught. Set to 100 to restore the old behaviour.
+PING_LOSS_BLOCK_THRESHOLD=101
 
 # MCMC block-detection patterns/IPs now live at the top of check-domains.sh
 # (edit there directly, no config.sh change needed).
 
 # How many domains to send per HTTP POST batch to /domain-block-report.
 REPORT_BATCH_SIZE=100
+
+# ----------------------------------------------------------------------------
+# DataImpulse mobile proxy (check "is this domain blocked in <country>" from
+# outside that country — no physical SIM required).
+#
+# When PROXY_ENABLED=1 every domain probe is tunnelled through the DataImpulse
+# gateway instead of this box's own network. ICMP cannot traverse an HTTP or
+# SOCKS proxy, so the ping stage is skipped in this mode and the verdict comes
+# from how the HTTPS request fails at the exit node (see README).
+# ----------------------------------------------------------------------------
+PROXY_ENABLED=0
+
+# Gateway. DataImpulse serves every plan from the same host; port 823 rotates
+# the exit IP on each request, ports 10000-10500 are the sticky-session ports.
+PROXY_SCHEME="http"                 # http | socks5h
+PROXY_HOST="gw.dataimpulse.com"
+PROXY_PORT=823
+
+# Plan credentials. The mobile pool is a SEPARATE plan from residential — use
+# the login/password shown for your MOBILE plan in the DataImpulse dashboard.
+PROXY_USER=""
+PROXY_PASS=""
+
+# Targeting. DataImpulse takes these as `__key.value` suffixes on the username,
+# e.g. <login>__cr.au__asn.1221. Leave a value empty to omit that param.
+PROXY_COUNTRY="au"                  # __cr.<iso2>  — Australia
+PROXY_CITY=""                       # __city.<name>, e.g. "sydney"
+PROXY_ASN=""                        # __asn.<number>, e.g. 1221 (Telstra)
+
+# Escape hatch: if your plan uses different targeting syntax, set the whole
+# param string here and it is appended verbatim (PROXY_COUNTRY/CITY/ASN and
+# the session params are then ignored).
+# PROXY_USER_SUFFIX="__cr.au__mobile.true"
+
+# rotating = a new exit IP per request (good for spreading a big domain list
+# across many mobile IPs). sticky = one IP per telco pass, held for
+# PROXY_SESSION_TTL minutes via __sessid/__sesstime.
+PROXY_SESSION_MODE="rotating"
+PROXY_SESSION_TTL=10
+
+# Optional per-telco targeting: map each TELCO_LIST label to extra `__` params
+# so one run can compare carriers. Entries here override PROXY_ASN/CITY above.
+# For Australian mobile carriers:
+#   TELCO_LIST=(TELSTRA OPTUS VODAFONE)
+#   TELCO_PROXY_MAP=(
+#       "TELSTRA=__asn.1221"
+#       "OPTUS=__asn.4804"
+#       "VODAFONE=__asn.133612"
+#   )
+TELCO_PROXY_MAP=()
+
+# Timeouts for probes that go through the gateway. These are deliberately far
+# more generous than CURL_TIMEOUT: a proxied request pays for the gateway
+# CONNECT, TLS to the target, another TLS handshake per redirect hop, and the
+# body download. If the total budget is too small, healthy sites that redirect
+# or serve a heavy page come back as reason=timeout.
+PROXY_CONNECT_TIMEOUT=10
+PROXY_CURL_TIMEOUT=25
+
+# Retries per domain before a failure is recorded as a verdict. Each retry
+# draws a fresh exit IP in rotating mode, so a single bad mobile node does not
+# become a false "blocked".
+PROXY_MAX_RETRIES=2
+
+# What an at-the-exit-node failure (DNS failure, TLS reset, refused connection,
+# timeout) means. "blocked" mirrors the direct-mode ping_loss behaviour;
+# "unknown" is the conservative choice if your target country has flaky mobile
+# routes. Gateway-side failures (auth rejected, 407, gateway unreachable) are
+# ALWAYS reported as unknown — never as blocked.
+PROXY_UNREACHABLE_RESULT="blocked"
+
+# Pre-flight guards, run once per batch before any domain is probed.
+# If either fails the batch is skipped with the pointer untouched, so a dead or
+# wrong-country session can never mark the whole list as blocked.
+PROXY_CONTROL_DOMAIN="www.google.com"
+PROXY_VERIFY_COUNTRY=1
+PROXY_IP_CHECK_URL="http://ip-api.com/json/?fields=status,countryCode,query,as"
+
+# Cooldown between telcos in proxy mode. The exit node switches instantly, so
+# the manual SIM-swap wait in SWITCH_COOLDOWN_SECONDS does not apply and this
+# value replaces it whenever PROXY_ENABLED=1.
+PROXY_SWITCH_COOLDOWN_SECONDS=5

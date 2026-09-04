@@ -54,6 +54,31 @@ MCMC_BLOCK_IPS=(
     "175.139.142.25"
 )
 
+# Regulator / ISP block-page HOSTS, matched against the FINAL URL ONLY. A real
+# block lands you *on* one of these pages, so the URL is the evidence.
+# Do NOT match these against the response body: a site that merely links to the
+# regulator then looks blocked. AU-facing gambling sites routinely cite
+# acma.gov.au in their own Interactive Gambling Act disclaimer, which is what
+# put the whole kingzo88.* family in the blacklist.
+BLOCK_PAGE_URL_PATTERNS=(
+    "afp\\.gov\\.au/blocked"
+    "acma\\.gov\\.au"
+    "esafety\\.gov\\.au"
+    "blocked[.-]?page\\.(telstra|optus|vodafone)\\.com\\.au"
+)
+
+# Block-page WORDING, matched against the final URL or the response body (some
+# ISPs serve the notice inline at the original URL). Reported as block_page.
+# Keep these SPECIFIC — a bare word like "blocked" false-positives on ordinary
+# error pages, and a bare regulator domain false-positives on any site that
+# links to one.
+BLOCK_PAGE_PATTERNS=(
+    "blocked by (a )?(court|federal court) order"
+    "federal court of australia .{0,40}(block|injunction)"
+    "this (site|website|domain) has been blocked"
+    "access to this website has been (blocked|disabled)"
+)
+
 load_config
 
 acquire_lock
@@ -108,6 +133,22 @@ RUN_ID="$(state_get RUN_ID)"
 TELCO_BLOCK_COUNT="$(state_get TELCO_BLOCK_COUNT)"
 TELCO_BLOCK_COUNT="${TELCO_BLOCK_COUNT:-0}"
 ANNOUNCED_TELCO="$(state_get ANNOUNCED_TELCO)"
+
+# ----- Proxy pre-flight ------------------------------------------------------
+# In proxy mode every probe leaves through the DataImpulse gateway, so verify
+# the gateway works and exits in the configured country BEFORE probing. A dead
+# or wrong-country session would otherwise mark the whole batch as blocked.
+if proxy_enabled; then
+    PROXY_SESSION_ID="$(state_get PROXY_SESSION_ID)"
+    if [[ -z "${PROXY_SESSION_ID}" ]]; then
+        proxy_session_new
+        state_set PROXY_SESSION_ID "${PROXY_SESSION_ID}"
+    fi
+    if ! proxy_health_check "${CURRENT_TELCO}"; then
+        log "Proxy unhealthy. Leaving pointer at ${POINTER}/${TOTAL_LINES} and skipping this run."
+        exit 0
+    fi
+fi
 
 # First batch for a telco -> announce.
 if (( POINTER == 0 )); then
@@ -168,7 +209,7 @@ flush_blocks() {
 if [[ -n "${BATCH_LINES}" ]]; then
     while IFS='|' read -r merchant_id host; do
         [[ -z "${host}" ]] && continue
-        check_one_domain "${host}"
+        check_one_domain "${host}" "${CURRENT_TELCO}"
         batch_count=$(( batch_count + 1 ))
 
         log "CHECK [$(( POINTER + batch_count ))/${TOTAL_LINES}] telco=${CURRENT_TELCO} mid=${merchant_id} host=${host} result=${CHECK_RESULT} reason=${CHECK_REASON} evidence=${CHECK_EVIDENCE}"
@@ -187,8 +228,8 @@ if [[ -n "${BATCH_LINES}" ]]; then
             json+="\"status\":\"blocked\","
             json+="\"reason\":\"$(json_escape "${CHECK_REASON}")\","
             json+="\"evidence\":\"$(json_escape "${CHECK_EVIDENCE}")\","
-            json+="\"packet_loss_pct\":${CHECK_LOSS_PCT},"
-            json+="\"http_code\":${CHECK_HTTP_CODE},"
+            json+="\"packet_loss_pct\":$(json_int "${CHECK_LOSS_PCT}"),"
+            json+="\"http_code\":$(json_int "${CHECK_HTTP_CODE}"),"
             json+="\"run_id\":\"$(json_escape "${RUN_ID}")\","
             json+="\"detected_at\":\"${ts}\""
             json+="}"
@@ -263,6 +304,9 @@ if (( NEW_POINTER >= TOTAL_LINES )); then
         state_set POINTER         "0"
         state_set ANNOUNCED_TELCO ""
         state_set SWITCH_UNTIL    "$(( $(date +%s) + SWITCH_COOLDOWN_SECONDS ))"
+        # Fresh gateway session so the next telco gets its own exit node.
+        proxy_session_new
+        state_set PROXY_SESSION_ID "${PROXY_SESSION_ID}"
     else
         # All telcos done -> summary + archive.
         STARTED_AT="$(state_get STARTED_AT)"

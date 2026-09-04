@@ -37,8 +37,14 @@ fi
 # pool into disjoint ranges (e.g. instance A: FETCH_OFFSET=0 FETCH_LIMIT=300,
 # instance B: FETCH_OFFSET=300 FETCH_LIMIT=300) so they never process the
 # same batch concurrently. Each instance needs its own config.sh / WORK_DIR.
+#
+# FETCH_COUNTRY scopes the pool to one country's merchants. Left empty the API
+# falls back to its own default (Malaysia); the offset/limit slice is applied
+# AFTER the country filter, so each country has its own independent pool and
+# instances splitting one country must not reuse another country's offsets.
 query="format=text&offset=${FETCH_OFFSET}"
 [[ -n "${FETCH_LIMIT}" ]] && query+="&limit=${FETCH_LIMIT}"
+[[ -n "${FETCH_COUNTRY}" ]] && query+="&country=$(url_encode "${FETCH_COUNTRY}")"
 
 log "Fetching active merchant domain list from ${API_BASE}/cron/domain-list?${query}"
 
@@ -47,10 +53,11 @@ headers_file="${DOMAINS_FILE}.headers.$$"
 trap 'rm -f "${tmp_file}" "${headers_file}"' EXIT
 
 if ! api_get_text_with_headers "/cron/domain-list?${query}" "${headers_file}" > "${tmp_file}"; then
-    die "API call failed (could not fetch domain list)."
+    die "API call failed (could not fetch domain list for country=${FETCH_COUNTRY:-api-default}). Is FETCH_COUNTRY one the API knows?"
 fi
 
 pool_total="$(awk -F': ' 'tolower($1)=="x-total-domains" { gsub(/\r/,"",$2); print $2; exit }' "${headers_file}" 2>/dev/null)"
+pool_country="$(awk -F': ' 'tolower($1)=="x-domain-country" { gsub(/\r/,"",$2); print $2; exit }' "${headers_file}" 2>/dev/null)"
 rm -f "${headers_file}"
 
 # Drop blank lines (avoid GNU sed -i; breaks on macOS BSD sed).
@@ -58,13 +65,13 @@ strip_blank_lines "${tmp_file}"
 total="$(wc -l < "${tmp_file}" | tr -d ' ')"
 if (( total == 0 )); then
     if [[ -n "${pool_total}" ]] && (( FETCH_OFFSET > 0 && FETCH_OFFSET >= pool_total )); then
-        log "FETCH_OFFSET=${FETCH_OFFSET} is beyond the current pool (${pool_total} domains). Nothing to do for this instance. Skipping."
+        log "FETCH_OFFSET=${FETCH_OFFSET} is beyond the current pool (${pool_total} domains${pool_country:+ for ${pool_country}}). Nothing to do for this instance. Skipping."
         exit 0
     fi
-    die "API returned 0 domains. Refusing to overwrite."
+    die "API returned 0 domains${pool_country:+ for ${pool_country}}. Refusing to overwrite."
 fi
 
-log "Fetched ${total} domains for this instance (offset=${FETCH_OFFSET}${FETCH_LIMIT:+, limit=${FETCH_LIMIT}}${pool_total:+, pool_total=${pool_total}})."
+log "Fetched ${total} domains for this instance (country=${pool_country:-${FETCH_COUNTRY:-api-default}}, offset=${FETCH_OFFSET}${FETCH_LIMIT:+, limit=${FETCH_LIMIT}}${pool_total:+, pool_total=${pool_total}})."
 
 mv "${tmp_file}" "${DOMAINS_FILE}"
 trap - EXIT
