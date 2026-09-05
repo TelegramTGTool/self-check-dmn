@@ -145,7 +145,7 @@ if proxy_enabled; then
         state_set PROXY_SESSION_ID "${PROXY_SESSION_ID}"
     fi
     if ! proxy_health_check "${CURRENT_TELCO}"; then
-        log "Proxy unhealthy. Leaving pointer at ${POINTER}/${TOTAL_LINES} and skipping this run."
+        log "WARN: failed to POST Proxy unhealthy. Leaving pointer at ${POINTER}/${TOTAL_LINES} and skipping this run."
         exit 0
     fi
 fi
