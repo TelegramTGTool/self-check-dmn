@@ -24,6 +24,12 @@ if [[ ! -f "${DOMAINS_FILE}" ]]; then
     bash "${SCRIPT_DIR}/fetch-domains.sh"
 fi
 
+# 2b. Refresh this session's in-country DNS resolvers for FETCH_COUNTRY.
+# Best-effort by design: a failure here must never stop the scan, because the
+# recursive a.sh loop depends on check-domains.sh always being reached.
+log "Running discover-resolvers.sh..."
+bash "${SCRIPT_DIR}/discover-resolvers.sh" || log "discover-resolvers.sh failed. Continuing with existing DNS settings."
+
 # 3. Run check-domains.sh
 log "Running check-domains.sh..."
 bash "${SCRIPT_DIR}/check-domains.sh"

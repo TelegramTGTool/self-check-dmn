@@ -119,6 +119,13 @@ PROXY_PASS=""
 # Targeting. DataImpulse takes these as `__key.value` suffixes on the username,
 # e.g. <login>__cr.au__asn.1221. Leave a value empty to omit that param.
 PROXY_COUNTRY="au"                  # __cr.<iso2>  — Australia
+
+# Keep the DataImpulse exit in the country named by FETCH_COUNTRY. With this on,
+# switching FETCH_COUNTRY is enough -- PROXY_COUNTRY follows and a stale value
+# can no longer ask for an impossible combination like "__cr.my" on an
+# Australian ASN, which matches no exit node and kills the batch on the
+# pre-flight health check. Set to 0 to manage the two by hand.
+PROXY_COUNTRY_FOLLOWS_FETCH=1
 PROXY_CITY=""                       # __city.<name>, e.g. "sydney"
 PROXY_ASN=""                        # __asn.<number>, e.g. 1221 (Telstra)
 
@@ -203,4 +210,44 @@ PROXY_LOCAL_DNS_CHECK=1
 # Pin a specific resolver for that stage (e.g. "1.1.1.1" to disable the signal,
 # or a known Malaysian resolver). Empty = this machine's system resolver.
 PROXY_DNS_RESOLVER=""
+
+# ---- Automatic in-country resolver discovery (discover-resolvers.sh) ---------
+# a.sh runs discover-resolvers.sh before every scan. It maps FETCH_COUNTRY to an
+# ISO code, pulls that country's public resolver list, and keeps the ones that
+# are actually enforcing the regulator blocklist right now. The sinkhole address
+# is LEARNED, not configured: a regulator points every blocked name at one IP,
+# so an address an in-country resolver returns for several unrelated domains --
+# while 8.8.8.8 returns something different for each -- can only be a sinkhole.
+#
+# The result lands in ${WORK_DIR}/resolvers.session as DNS_SESSION_RESOLVERS /
+# DNS_SESSION_SINKHOLES. lib.sh loads that file and, when it is populated, pins
+# PROXY_DNS_RESOLVER, turns PROXY_LOCAL_DNS_CHECK on and adds the learned
+# sinkholes to MCMC_BLOCK_IPS. That lifts the old "must sit on a Malaysian ISP"
+# requirement above -- the resolver being queried is in-country, this box need
+# not be. With discovery off or unsuccessful, everything above applies unchanged.
+DNS_DISCOVERY_ENABLED=1
+
+# Override the FETCH_COUNTRY -> ISO 3166-1 alpha-2 mapping (e.g. "my", "au").
+# Empty = derive it from FETCH_COUNTRY.
+DNS_COUNTRY_ISO=""
+
+# How hard discovery works each run. Defaults are tuned for a fast pre-scan
+# pass; raise DNS_MAX_CANDIDATES if a country's public resolvers are flaky.
+DNS_SAMPLE_DOMAINS=8        # domains sampled from this instance's own list
+DNS_MAX_CANDIDATES=120      # resolvers health-checked per run
+DNS_PROBE_RESOLVERS=12      # healthy resolvers actually probed for a blocklist
+DNS_KEEP_RESOLVERS=4        # enforcing resolvers kept for the scan
+DNS_SINKHOLE_MIN_HITS=3     # distinct domains that must share one bogus IP
+
+# A CDN also answers differently in-country, so a candidate sinkhole is dropped
+# unless it either serves nothing at all (a blackhole, as in Malaysia) or serves
+# something that reads like a regulator notice (as in Australia, where it
+# redirects to acma.gov.au). Set to 0 to accept any repeated bogus address.
+DNS_SINKHOLE_VERIFY=1
+
+# Global public resolvers (Cloudflare, Google, Quad9, OpenDNS, AdGuard...) get
+# listed under every country but are not in-country ISP resolvers, and some of
+# them filter on their own policy rather than the regulator's list. Regex of
+# resolver IPs discovery skips.
+DNS_EXCLUDE_RESOLVERS="^(1\\.0\\.0\\.|1\\.1\\.1\\.|8\\.8\\.|8\\.26\\.|9\\.9\\.9|149\\.112\\.|208\\.67\\.2|94\\.140\\.1|76\\.76\\.2|185\\.228\\.16)"
 

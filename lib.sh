@@ -7,6 +7,24 @@ set -u
 SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
 # ----- Config loading ---------------------------------------------------------
+# Maps FETCH_COUNTRY to its ISO 3166-1 alpha-2 code. Used for the DataImpulse
+# __cr. target and for the country's resolver list. Empty when unknown.
+country_iso() {
+    local c
+    c="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+    case "${c}" in
+        malaysia|my)          echo "my" ;;
+        australia|au)         echo "au" ;;
+        singapore|sg)         echo "sg" ;;
+        indonesia|id)         echo "id" ;;
+        thailand|th)          echo "th" ;;
+        philippines|ph)       echo "ph" ;;
+        vietnam|viet\ nam|vn) echo "vn" ;;
+        india|in)             echo "in" ;;
+        *)                    echo "" ;;
+    esac
+}
+
 load_config() {
     local cfg="${SCRIPT_DIR}/config.sh"
     if [[ ! -f "${cfg}" ]]; then
@@ -159,6 +177,55 @@ load_config() {
     STATE_FILE="${WORK_DIR}/domains.active.txt.state"
     REMARKS_FILE="${WORK_DIR}/domains.active.txt.remarks"
     LOCK_FILE="${WORK_DIR}/domains.active.txt.lock"
+
+    # ---- Keep the proxy exit in the country being checked --------------------
+    # FETCH_COUNTRY decides which merchants this instance is handed, so it also
+    # decides which country the exit node must sit in. Leaving PROXY_COUNTRY on
+    # a stale value asks DataImpulse for something impossible -- "__cr.my" with
+    # an Australian ASN matches no exit at all, and the batch dies on the
+    # pre-flight health check with the pointer untouched. Set
+    # PROXY_COUNTRY_FOLLOWS_FETCH=0 to manage the two independently.
+    : "${PROXY_COUNTRY_FOLLOWS_FETCH:=1}"
+    if [[ "${PROXY_COUNTRY_FOLLOWS_FETCH}" == "1" && -n "${FETCH_COUNTRY}" ]]; then
+        local _fetch_iso
+        _fetch_iso="$(country_iso "${FETCH_COUNTRY}")"
+        if [[ -n "${_fetch_iso}" && "${_fetch_iso}" != "${PROXY_COUNTRY}" ]]; then
+            log "Proxy country '${PROXY_COUNTRY}' does not match FETCH_COUNTRY=${FETCH_COUNTRY}; targeting __cr.${_fetch_iso} instead."
+            PROXY_COUNTRY="${_fetch_iso}"
+        fi
+    fi
+
+    # ---- Session DNS resolvers (written by discover-resolvers.sh) ------------
+    # In-country resolvers that were observed enforcing the regulator blocklist
+    # this session, plus the sinkhole address(es) they hand out. Purely
+    # additive: with no session file every value below keeps whatever config.sh
+    # set, so the scan behaves exactly as it did before this feature existed.
+    DNS_SESSION_FILE="${WORK_DIR}/resolvers.session"
+    : "${DNS_SESSION_RESOLVERS:=}"
+    : "${DNS_SESSION_SINKHOLES:=}"
+    if [[ -f "${DNS_SESSION_FILE}" ]]; then
+        # shellcheck disable=SC1090
+        source "${DNS_SESSION_FILE}"
+    fi
+    if [[ -n "${DNS_SESSION_RESOLVERS}" ]]; then
+        # Pin the first discovered resolver; resolve_host_ips_local() walks the
+        # rest as fallbacks. An explicit PROXY_DNS_RESOLVER in config.sh wins.
+        if [[ -z "${PROXY_DNS_RESOLVER}" ]]; then
+            PROXY_DNS_RESOLVER="${DNS_SESSION_RESOLVERS%% *}"
+        fi
+        # A discovered in-country resolver makes the DNS stage meaningful on any
+        # box, not just one physically on that country's ISP.
+        PROXY_LOCAL_DNS_CHECK=1
+        # Learned sinkholes join the configured ones; the verdict path itself is
+        # untouched, it just has more addresses to match against.
+        local _sink
+        for _sink in ${DNS_SESSION_SINKHOLES}; do
+            case " ${MCMC_BLOCK_IPS[*]+${MCMC_BLOCK_IPS[*]}} " in
+                *" ${_sink} "*) ;;
+                *) MCMC_BLOCK_IPS+=("${_sink}") ;;
+            esac
+        done
+    fi
 }
 
 # Remove empty / whitespace-only lines (portable; no sed -i).
@@ -792,10 +859,14 @@ proxy_code_is_block() {
 # Used for the regulator-DNS stage in proxy mode: the sinkhole answer only
 # exists on a Malaysian ISP resolver, and the gateway never consults one.
 # Prints one IPv4 per line; empty output means "could not resolve".
-resolve_host_ips_local() {
+# Resolve <host> at ONE resolver. Empty resolver = this box's system resolver,
+# which is exactly what resolve_host_ips_local() did before session resolvers
+# existed.
+_resolve_host_ips_at() {
     local host="$1"
+    local resolver="${2:-}"
     local -a server=()
-    [[ -n "${PROXY_DNS_RESOLVER}" ]] && server=("@${PROXY_DNS_RESOLVER}")
+    [[ -n "${resolver}" ]] && server=("@${resolver}")
 
     if command -v dig >/dev/null 2>&1; then
         dig +short +time=3 +tries=1 "${host}" ${server[@]+"${server[@]}"} 2>/dev/null \
@@ -803,12 +874,28 @@ resolve_host_ips_local() {
         return 0
     fi
     if command -v host >/dev/null 2>&1; then
-        host -W 3 -t A "${host}" ${PROXY_DNS_RESOLVER:+"${PROXY_DNS_RESOLVER}"} 2>/dev/null \
+        host -W 3 -t A "${host}" ${resolver:+"${resolver}"} 2>/dev/null \
             | sed -n 's/.*has address \([0-9.]*\).*/\1/p' || true
         return 0
     fi
     getent ahostsv4 "${host}" 2>/dev/null | awk '{print $1}' | sort -u || true
     return 0
+}
+
+resolve_host_ips_local() {
+    local host="$1"
+    # Walk this session's in-country resolvers first and take the first one that
+    # answers. A public resolver dying mid-scan would otherwise turn every
+    # remaining blocked domain into a silent "ok".
+    local _r _out
+    for _r in ${DNS_SESSION_RESOLVERS:-}; do
+        _out="$(_resolve_host_ips_at "${host}" "${_r}")"
+        if [[ -n "${_out}" ]]; then
+            printf '%s\n' "${_out}"
+            return 0
+        fi
+    done
+    _resolve_host_ips_at "${host}" "${PROXY_DNS_RESOLVER}"
 }
 
 # Probe one host through the proxy. Sets the same CHECK_* globals.
