@@ -72,6 +72,28 @@ load_config() {
     : "${PROXY_CURL_TIMEOUT:=25}"                # whole transfer, redirects included
     : "${PROXY_MAX_RETRIES:=2}"                  # retries per domain before verdict
     : "${PROXY_UNREACHABLE_RESULT:=blocked}"     # blocked | unknown
+    # HTTP status codes that count as a block when the probe goes through the
+    # proxy. 451 is the explicit legal one; 403 is added because an ACMA-blocked
+    # site answers the AU exit with a bare 403 while serving the same request
+    # fine from anywhere else — measured 2026-09-07 across VODAFONE exits.
+    # Space-separated; set to just "451" to restore the old behaviour.
+    : "${PROXY_BLOCK_HTTP_CODES:=451 403}"
+
+    # ---- Stage 1 in proxy mode: regulator DNS check --------------------------
+    # MCMC enforces its blocklist at the Malaysian ISP resolvers, and the
+    # DataImpulse gateway resolves names at its own infrastructure (Google DNS,
+    # Singapore) BEFORE traffic reaches the Malaysian mobile exit. The block is
+    # therefore invisible to a proxied fetch, no matter which ASN is targeted.
+    # Measured 2026-09-06: 40 distinct exits across AS4818/9534/38466/10030 all
+    # served the live site for a domain TM sinkholes to 175.139.142.25.
+    #
+    # So the resolver is queried separately from the transport: the name is
+    # resolved from THIS host (which must sit on a Malaysian ISP) and matched
+    # against MCMC_BLOCK_IPS, while the proxy still carries the HTTP probe with
+    # its per-telco ASN targeting. Set PROXY_DNS_RESOLVER to pin a specific
+    # resolver; empty uses the system one.
+    : "${PROXY_LOCAL_DNS_CHECK:=1}"
+    : "${PROXY_DNS_RESOLVER:=}"
     : "${PROXY_CONTROL_DOMAIN:=www.google.com}"  # must be reachable if proxy is healthy
     # Free ip-api tier is HTTP-only; the request just asks "what IP am I?", so
     # nothing sensitive travels in the clear. Any endpoint returning JSON with
@@ -752,11 +774,53 @@ check_one_domain() {
     CHECK_EVIDENCE="code=${PROBE_CODE} url=${PROBE_URL} method=${PROBE_METHOD}"
 }
 
+# True when the status code is one PROXY_BLOCK_HTTP_CODES calls a block.
+# Sets PROXY_BLOCK_CODE_REASON to the reason string for the log line.
+proxy_code_is_block() {
+    local code="$1" want
+    PROXY_BLOCK_CODE_REASON=""
+    for want in ${PROXY_BLOCK_HTTP_CODES}; do
+        if [[ "${code}" == "${want}" ]]; then
+            PROXY_BLOCK_CODE_REASON="http_${code}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Resolve a host to its A records from THIS machine, not through the proxy.
+# Used for the regulator-DNS stage in proxy mode: the sinkhole answer only
+# exists on a Malaysian ISP resolver, and the gateway never consults one.
+# Prints one IPv4 per line; empty output means "could not resolve".
+resolve_host_ips_local() {
+    local host="$1"
+    local -a server=()
+    [[ -n "${PROXY_DNS_RESOLVER}" ]] && server=("@${PROXY_DNS_RESOLVER}")
+
+    if command -v dig >/dev/null 2>&1; then
+        dig +short +time=3 +tries=1 "${host}" ${server[@]+"${server[@]}"} 2>/dev/null \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true
+        return 0
+    fi
+    if command -v host >/dev/null 2>&1; then
+        host -W 3 -t A "${host}" ${PROXY_DNS_RESOLVER:+"${PROXY_DNS_RESOLVER}"} 2>/dev/null \
+            | sed -n 's/.*has address \([0-9.]*\).*/\1/p' || true
+        return 0
+    fi
+    getent ahostsv4 "${host}" 2>/dev/null | awk '{print $1}' | sort -u || true
+    return 0
+}
+
 # Probe one host through the proxy. Sets the same CHECK_* globals.
 #
 # Verdict rules:
+#   * name resolves to a regulator sinkhole
+#     (checked on the LOCAL resolver, not
+#     through the gateway)                  -> blocked
 #   * final url on a regulator block page   -> blocked
-#   * HTTP 451                              -> blocked (legal block)
+#   * status in PROXY_BLOCK_HTTP_CODES
+#     (451 legal block, 403 = the ACMA
+#     pattern: refused to the AU exit only) -> blocked
 #   * DNS / TLS / connection failure at the
 #     exit node                             -> blocked (per PROXY_UNREACHABLE_RESULT)
 #   * any real HTTP status from the target  -> ok (it answered)
@@ -770,6 +834,26 @@ check_one_domain_via_proxy() {
 
     # ICMP cannot be proxied; there is no packet-loss figure in this mode.
     CHECK_LOSS_PCT=0
+
+    # ---- Stage 1: regulator DNS, resolved locally (see load_config notes).
+    # Deliberately NOT sent through the gateway: the gateway resolves in
+    # Singapore and would never see the sinkhole. A hit here is authoritative —
+    # a name pointed at a regulator sinkhole is blocked regardless of what the
+    # proxied fetch returns, and the proxied fetch WILL return the live site.
+    if [[ "${PROXY_LOCAL_DNS_CHECK}" == "1" ]]; then
+        local rip block_ip
+        while read -r rip; do
+            [[ -n "${rip}" ]] || continue
+            for block_ip in ${MCMC_BLOCK_IPS[@]+"${MCMC_BLOCK_IPS[@]}"}; do
+                if [[ "${rip}" == "${block_ip}" ]]; then
+                    CHECK_RESULT="blocked"
+                    CHECK_REASON="mcmc_block_ip"
+                    CHECK_EVIDENCE="ip=${rip} dns=local:${PROXY_DNS_RESOLVER:-system} telco=${telco:-?}"
+                    return
+                fi
+            done
+        done < <(resolve_host_ips_local "${host}")
+    fi
 
     while (( attempt <= max_attempts )); do
         # Rebuild args each attempt: in rotating mode this draws a fresh exit
@@ -794,10 +878,10 @@ check_one_domain_via_proxy() {
         fi
 
         if [[ "${class}" == "ok" ]]; then
-            if (( PROBE_CODE == 451 )); then
+            if proxy_code_is_block "${PROBE_CODE}"; then
                 CHECK_RESULT="blocked"
-                CHECK_REASON="http_451"
-                CHECK_EVIDENCE="code=451 url=${PROBE_URL} cc=${PROXY_EXIT_COUNTRY:-${PROXY_COUNTRY}}"
+                CHECK_REASON="${PROXY_BLOCK_CODE_REASON}"
+                CHECK_EVIDENCE="code=${PROBE_CODE} url=${PROBE_URL} method=${PROBE_METHOD} cc=${PROXY_EXIT_COUNTRY:-${PROXY_COUNTRY}} exit_ip=${PROXY_EXIT_IP:-?}"
                 return
             fi
 
@@ -819,6 +903,13 @@ check_one_domain_via_proxy() {
         # inside PROXY_CURL_TIMEOUT. A host that answers is not blocked,
         # whatever the curl rc says.
         if (( PROBE_CODE >= 100 )); then
+            # ...unless the status it did send is itself a block verdict.
+            if proxy_code_is_block "${PROBE_CODE}"; then
+                CHECK_RESULT="blocked"
+                CHECK_REASON="${PROXY_BLOCK_CODE_REASON}"
+                CHECK_EVIDENCE="code=${PROBE_CODE} url=${PROBE_URL} partial=${class} cc=${PROXY_EXIT_COUNTRY:-${PROXY_COUNTRY}} exit_ip=${PROXY_EXIT_IP:-?}"
+                return
+            fi
             CHECK_RESULT="ok"
             CHECK_REASON="ok"
             CHECK_EVIDENCE="code=${PROBE_CODE} url=${PROBE_URL} partial=${class} curl_rc=${PROBE_RC} cc=${PROXY_EXIT_COUNTRY:-${PROXY_COUNTRY}}"

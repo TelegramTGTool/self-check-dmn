@@ -217,11 +217,12 @@ by strength of evidence, not severity:
 | Label                       | Codes                                                                                                             |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `MCMC Blocked`              | `mcmc_block_ip`, `mcmc_redirect`                                                                                    |
-| `Blocked`                   | `block_page`, `http_451`, `dns_block`                                                                               |
+| `Blocked`                   | `block_page`, `http_451`, `http_403`, `dns_block`                                                                   |
 | `Not Stable/Invalid Domain` | `dns_invalid`, `tls_reset`, `connection_reset`, `unreachable`, `timeout`, `proxy_error`, `http_error`, `ping_loss`   |
 
 `Blocked` means positive proof: the probe landed on a regulator block page, got
-a legal 451, or the name resolves from the probe box but not at the exit node.
+a legal 451, a 403 refused to the proxy exit (`PROXY_BLOCK_HTTP_CODES`), or the
+name resolves from the probe box but not at the exit node.
 Everything in the third bucket means "could not load it", not "it is blocked".
 An unrecognised code falls back to the third label rather than leaking a raw
 slug into the UI, so adding a checker reason never breaks the dashboard.
@@ -272,6 +273,7 @@ differs, set `PROXY_USER_SUFFIX` and it is appended verbatim.
   | ------------------------------------------------- | ----------- | ------------------ |
   | Final URL is a regulator block page               | blocked     | `mcmc_redirect` / `block_page` |
   | HTTP 451 Unavailable For Legal Reasons            | blocked     | `http_451`         |
+  | HTTP 403 to the exit (`PROXY_BLOCK_HTTP_CODES`)   | blocked     | `http_403`         |
   | Resolves from the probe box, but not at the exit  | blocked\*   | `dns_block`        |
   | Resolves nowhere (dead / expired domain)          | blocked\*   | `dns_invalid`      |
   | TLS handshake reset                               | blocked\*   | `tls_reset`        |

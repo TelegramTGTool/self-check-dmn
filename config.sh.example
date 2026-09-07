@@ -164,6 +164,14 @@ PROXY_MAX_RETRIES=2
 # ALWAYS reported as unknown — never as blocked.
 PROXY_UNREACHABLE_RESULT="blocked"
 
+# HTTP status codes that count as a block when the probe goes through the proxy.
+# 451 is the explicit legal one. 403 is included because an ACMA-blocked site
+# answers the AU exit with a bare 403 while serving the identical request fine
+# from elsewhere. Space-separated; set to "451" alone to disable the 403 rule.
+# Note: 403 is also what a WAF/bot filter returns, so a domain marked http_403
+# is worth eyeballing once before acting on it.
+PROXY_BLOCK_HTTP_CODES="451 403"
+
 # Pre-flight guards, run once per batch before any domain is probed.
 # If either fails the batch is skipped with the pointer untouched, so a dead or
 # wrong-country session can never mark the whole list as blocked.
@@ -175,3 +183,24 @@ PROXY_IP_CHECK_URL="http://ip-api.com/json/?fields=status,countryCode,query,as"
 # the manual SIM-swap wait in SWITCH_COOLDOWN_SECONDS does not apply and this
 # value replaces it whenever PROXY_ENABLED=1.
 PROXY_SWITCH_COOLDOWN_SECONDS=5
+
+# ---- Regulator DNS stage (proxy mode) ---------------------------------------
+# MCMC enforces its blocklist at the Malaysian ISP resolvers. The DataImpulse
+# gateway resolves names at its own infrastructure (Google DNS, Singapore)
+# before traffic ever reaches the Malaysian mobile exit, so a proxied fetch
+# sees the live site even for a sinkholed domain — verified across 40 distinct
+# exits on AS4818 / AS9534 / AS38466 / AS10030.
+#
+# With this on, the domain is resolved from THIS host and matched against
+# MCMC_BLOCK_IPS, while the proxy still carries the HTTP probe with its
+# per-telco ASN targeting. REQUIRES this machine to sit on a Malaysian ISP.
+#
+# NOTE: the verdict comes from this host's resolver, so every telco in
+# TELCO_LIST returns the same blocked/ok answer. TELCO_PROXY_MAP still governs
+# which ASN carries the fetch, but it does not differentiate the verdict.
+PROXY_LOCAL_DNS_CHECK=1
+
+# Pin a specific resolver for that stage (e.g. "1.1.1.1" to disable the signal,
+# or a known Malaysian resolver). Empty = this machine's system resolver.
+PROXY_DNS_RESOLVER=""
+
