@@ -270,6 +270,21 @@ DNS_SINKHOLE_MIN_HITS=3     # distinct domains that must share one bogus IP
 # redirects to acma.gov.au). Set to 0 to accept any repeated bogus address.
 DNS_SINKHOLE_VERIFY=1
 
+# Concurrency of the resolver health check. Each background job costs TWO
+# processes (the subshell plus its dig), and Android 12+ kills a process tree
+# that exceeds the phantom-process limit of 32 -- Termux does not merely lose
+# the extra children, the whole session dies with SIGKILL (signal 9), taking
+# a.sh and the MacroDroid loop with it. The old value of 25 meant ~50 live
+# processes and did exactly that on BlueStacks. Auto-capped to 2 when Android or
+# Termux is detected, so raise this only on a desktop probe box.
+DNS_PARALLEL=4
+
+# Timeout for the health-check query only. Almost every candidate on the public
+# list is dead and each one costs a full timeout, so this dominates discovery
+# wall time; a live resolver answers in well under a second. The real lookups
+# still use DNS_QUERY_TIMEOUT.
+DNS_HEALTH_TIMEOUT=2
+
 # Global public resolvers (Cloudflare, Google, Quad9, OpenDNS, AdGuard...) get
 # listed under every country but are not in-country ISP resolvers, and some of
 # them filter on their own policy rather than the regulator's list. Regex of

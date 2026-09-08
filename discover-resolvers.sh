@@ -40,6 +40,11 @@ load_config
 : "${DNS_KEEP_RESOLVERS:=4}"              # enforcing resolvers kept for the scan
 : "${DNS_SINKHOLE_MIN_HITS:=3}"           # distinct domains sharing one bogus IP
 : "${DNS_QUERY_TIMEOUT:=3}"
+# The health check is where the wall time goes: nearly every candidate on the
+# public list is dead, and each one costs a full timeout. A live resolver
+# answers in well under a second, so this can be much tighter than the timeout
+# used for the real lookups.
+: "${DNS_HEALTH_TIMEOUT:=2}"
 # Global public resolvers get listed under every country but are not in-country
 # ISP resolvers; some of them (Cloudflare Families, Quad9) filter on their own
 # policy, which is not the regulator's blocklist.
@@ -47,7 +52,19 @@ load_config
 : "${DNS_SINKHOLE_VERIFY:=1}"             # sanity-check what the sinkhole serves
 : "${DNS_SINKHOLE_HTTP_TIMEOUT:=8}"
 : "${DNS_SINKHOLE_PATTERN:=mcmc|skmm|acma|blocked|block page|\.gov\.}"
-: "${DNS_PARALLEL:=25}"
+: "${DNS_PARALLEL:=4}"
+
+# Android kills a process tree that spawns too many children: the phantom
+# process limit is 32 on Android 12+, and Termux does not just lose the extra
+# children -- the whole session dies with SIGKILL (signal 9), which takes a.sh
+# and the MacroDroid loop with it. Each background job here costs two processes
+# (the subshell and its dig), so keep the fan-out small on the probe boxes.
+DNS_HOST_OS="$(uname -o 2>/dev/null || true)"
+if [[ "${DNS_HOST_OS}" == "Android" || -n "${TERMUX_VERSION:-}" ]]; then
+    if (( DNS_PARALLEL > 2 )); then
+        DNS_PARALLEL=2
+    fi
+fi
 
 SESSION_FILE="${WORK_DIR}/resolvers.session"
 NS_CACHE="${WORK_DIR}/nameservers.%s.txt"
@@ -270,11 +287,19 @@ if (( KEPT_N == 0 )); then
     running=0
     for res in ${CANDIDATES[@]+"${CANDIDATES[@]}"}; do
         {
-            out="$(dns_a "${res}" "${DNS_CONTROL_DOMAIN}")"
+            out="$(DNS_QUERY_TIMEOUT="${DNS_HEALTH_TIMEOUT}" dns_a "${res}" "${DNS_CONTROL_DOMAIN}")"
             [[ -n "${out}" ]] && echo "${res}" > "${HEALTH_DIR}/${res}"
         } &
         running=$(( running + 1 ))
-        if (( running >= DNS_PARALLEL )); then wait; running=0; fi
+        if (( running >= DNS_PARALLEL )); then
+            wait
+            running=0
+            # Stop as soon as there are enough live resolvers to probe. Without
+            # this the loop walks all DNS_MAX_CANDIDATES every time, which is
+            # pure cost once the quota is met.
+            found="$(ls -1 "${HEALTH_DIR}" 2>/dev/null | wc -l | tr -d ' ')"
+            (( found >= DNS_PROBE_RESOLVERS )) && break
+        fi
     done
     wait
     HEALTHY=()
