@@ -90,6 +90,15 @@ load_config() {
     : "${PROXY_CURL_TIMEOUT:=25}"                # whole transfer, redirects included
     : "${PROXY_MAX_RETRIES:=2}"                  # retries per domain before verdict
     : "${PROXY_UNREACHABLE_RESULT:=blocked}"     # blocked | unknown
+    # How many of this session's in-country resolvers must independently return
+    # a sinkhole before a domain is recorded as DNS-blocked. The public open
+    # resolvers are largely consumer CPE boxes on dynamic IPs -- one can start
+    # wildcarding, or change hands, between runs. Lowered automatically when
+    # fewer than this many resolvers answer, so detection never silently stops.
+    : "${DNS_BLOCK_QUORUM:=2}"
+    # Verify a bare 403/451 against this box's own direct connection before
+    # calling it a block. See block_code_is_exit_specific().
+    : "${PROXY_BLOCK_CODE_CONTROL:=1}"
     # HTTP status codes that count as a block when the probe goes through the
     # proxy. 451 is the explicit legal one; 403 is added because an ACMA-blocked
     # site answers the AU exit with a bare 403 while serving the same request
@@ -898,6 +907,86 @@ resolve_host_ips_local() {
     _resolve_host_ips_at "${host}" "${PROXY_DNS_RESOLVER}"
 }
 
+# ---- Guard 1: agreement between in-country resolvers ------------------------
+# Asks EVERY resolver in this session, not just the first to answer, and reports
+# how many independently returned a regulator sinkhole. A single flaky resolver
+# can then no longer mark a whole batch blocked.
+#
+# Sets DNS_QUORUM_IP / DNS_QUORUM_RESOLVER / DNS_QUORUM_AGREE / DNS_QUORUM_TOTAL.
+# Returns 0 when the agreement threshold is met.
+dns_block_quorum() {
+    local host="$1"
+    local r ip bip got answered agree=0 total=0 hit_ip="" hit_res=""
+
+    DNS_QUORUM_IP=""; DNS_QUORUM_RESOLVER=""
+    DNS_QUORUM_AGREE=0; DNS_QUORUM_TOTAL=0
+
+    for r in ${DNS_SESSION_RESOLVERS:-}; do
+        got=""; answered=0
+        while read -r ip; do
+            [[ -n "${ip}" ]] || continue
+            answered=1
+            for bip in ${MCMC_BLOCK_IPS[@]+"${MCMC_BLOCK_IPS[@]}"}; do
+                if [[ "${ip}" == "${bip}" ]]; then
+                    got="${ip}"
+                    break
+                fi
+            done
+            [[ -n "${got}" ]] && break
+        done < <(_resolve_host_ips_at "${host}" "${r}")
+
+        (( answered == 1 )) && total=$(( total + 1 ))
+        if [[ -n "${got}" ]]; then
+            agree=$(( agree + 1 ))
+            if [[ -z "${hit_ip}" ]]; then
+                hit_ip="${got}"
+                hit_res="${r}"
+            fi
+        fi
+    done
+
+    DNS_QUORUM_IP="${hit_ip}"; DNS_QUORUM_RESOLVER="${hit_res}"
+    DNS_QUORUM_AGREE="${agree}"; DNS_QUORUM_TOTAL="${total}"
+
+    # Never demand more agreement than there are resolvers answering, or a
+    # country down to one working resolver would report everything clean.
+    local need="${DNS_BLOCK_QUORUM}"
+    (( total < need )) && need="${total}"
+    (( need < 1 )) && need=1
+    (( agree > 0 && agree >= need ))
+}
+
+# ---- Guard 2: is this 403/451 specific to the exit? -------------------------
+# The reason 403 counts as a block at all is the assumption noted above: an
+# ACMA-blocked site "answers the AU exit with a bare 403 while serving the same
+# request fine from anywhere else". Nothing verified that at runtime, so a site
+# that refuses EVERYONE (bot protection, dead origin) was recorded as blocked.
+#
+# The control is this box's OWN direct connection -- never a second country's
+# exit, because an instance is pinned to one country and must stay there. Same
+# status from both vantages means the site refuses everybody, which is not a
+# block. If the control cannot get a status at all, the original verdict stands
+# rather than losing the signal.
+block_code_is_exit_specific() {
+    local host="$1" code="$2"
+    BLOCK_CODE_CONTROL=""
+    [[ "${PROXY_BLOCK_CODE_CONTROL}" == "1" ]] || return 0
+
+    # http_probe writes the PROBE_* globals the caller still needs for evidence.
+    local _code="${PROBE_CODE}" _url="${PROBE_URL}" _method="${PROBE_METHOD}" _rc="${PROBE_RC}"
+    local err_file ctrl
+    err_file="$(mktemp)"
+    http_probe "https://${host}/" "${CURL_CONNECT_TIMEOUT}" "${CURL_TIMEOUT}" "${err_file}"
+    ctrl="${PROBE_CODE}"
+    rm -f "${err_file}"
+    PROBE_CODE="${_code}"; PROBE_URL="${_url}"; PROBE_METHOD="${_method}"; PROBE_RC="${_rc}"
+
+    BLOCK_CODE_CONTROL="direct:${ctrl}"
+    (( ctrl < 100 )) && return 0          # no status from the control; keep the verdict
+    [[ "${ctrl}" == "${code}" ]] && return 1
+    return 0
+}
+
 # Probe one host through the proxy. Sets the same CHECK_* globals.
 #
 # Verdict rules:
@@ -927,7 +1016,14 @@ check_one_domain_via_proxy() {
     # Singapore and would never see the sinkhole. A hit here is authoritative —
     # a name pointed at a regulator sinkhole is blocked regardless of what the
     # proxied fetch returns, and the proxied fetch WILL return the live site.
-    if [[ "${PROXY_LOCAL_DNS_CHECK}" == "1" ]]; then
+    if [[ "${PROXY_LOCAL_DNS_CHECK}" == "1" ]] && [[ -n "${DNS_SESSION_RESOLVERS:-}" ]]; then
+        if dns_block_quorum "${host}"; then
+            CHECK_RESULT="blocked"
+            CHECK_REASON="mcmc_block_ip"
+            CHECK_EVIDENCE="ip=${DNS_QUORUM_IP} dns=local:${DNS_QUORUM_RESOLVER} telco=${telco:-?} agree=${DNS_QUORUM_AGREE}/${DNS_QUORUM_TOTAL}"
+            return
+        fi
+    elif [[ "${PROXY_LOCAL_DNS_CHECK}" == "1" ]]; then
         local rip block_ip
         while read -r rip; do
             [[ -n "${rip}" ]] || continue
@@ -965,10 +1061,10 @@ check_one_domain_via_proxy() {
         fi
 
         if [[ "${class}" == "ok" ]]; then
-            if proxy_code_is_block "${PROBE_CODE}"; then
+            if proxy_code_is_block "${PROBE_CODE}" && block_code_is_exit_specific "${host}" "${PROBE_CODE}"; then
                 CHECK_RESULT="blocked"
                 CHECK_REASON="${PROXY_BLOCK_CODE_REASON}"
-                CHECK_EVIDENCE="code=${PROBE_CODE} url=${PROBE_URL} method=${PROBE_METHOD} cc=${PROXY_EXIT_COUNTRY:-${PROXY_COUNTRY}} exit_ip=${PROXY_EXIT_IP:-?}"
+                CHECK_EVIDENCE="code=${PROBE_CODE} url=${PROBE_URL} method=${PROBE_METHOD} cc=${PROXY_EXIT_COUNTRY:-${PROXY_COUNTRY}} exit_ip=${PROXY_EXIT_IP:-?} control=${BLOCK_CODE_CONTROL:-off}"
                 return
             fi
 
@@ -991,10 +1087,10 @@ check_one_domain_via_proxy() {
         # whatever the curl rc says.
         if (( PROBE_CODE >= 100 )); then
             # ...unless the status it did send is itself a block verdict.
-            if proxy_code_is_block "${PROBE_CODE}"; then
+            if proxy_code_is_block "${PROBE_CODE}" && block_code_is_exit_specific "${host}" "${PROBE_CODE}"; then
                 CHECK_RESULT="blocked"
                 CHECK_REASON="${PROXY_BLOCK_CODE_REASON}"
-                CHECK_EVIDENCE="code=${PROBE_CODE} url=${PROBE_URL} partial=${class} cc=${PROXY_EXIT_COUNTRY:-${PROXY_COUNTRY}} exit_ip=${PROXY_EXIT_IP:-?}"
+                CHECK_EVIDENCE="code=${PROBE_CODE} url=${PROBE_URL} partial=${class} cc=${PROXY_EXIT_COUNTRY:-${PROXY_COUNTRY}} exit_ip=${PROXY_EXIT_IP:-?} control=${BLOCK_CODE_CONTROL:-off}"
                 return
             fi
             CHECK_RESULT="ok"

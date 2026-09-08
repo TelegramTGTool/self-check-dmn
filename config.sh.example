@@ -171,6 +171,31 @@ PROXY_MAX_RETRIES=2
 # ALWAYS reported as unknown — never as blocked.
 PROXY_UNREACHABLE_RESULT="blocked"
 
+# ---- Verdict guards ---------------------------------------------------------
+# How many of this session's in-country resolvers must independently return a
+# regulator sinkhole before a domain is recorded blocked. The public open
+# resolvers are largely consumer CPE boxes on dynamic IPs: measured 2026-09-08,
+# only 2 of 29 healthy Malaysian resolvers were enforcing, and one that enforced
+# earlier the same day had stopped. Requiring agreement means a single box that
+# starts wildcarding cannot mark a whole batch blocked. Automatically lowered
+# when fewer than this many resolvers answer, so detection never silently stops;
+# the CHECK evidence carries agree=N/M so any verdict can be audited.
+DNS_BLOCK_QUORUM=2
+
+# Verify a bare 403/451 against this box's OWN direct connection before calling
+# it a block. 403 counts as a block only because an ACMA-blocked site answers
+# the in-country exit with 403 while serving everyone else normally -- nothing
+# checked that at runtime, so a site that refuses EVERYBODY (bot protection,
+# dead origin) was recorded as blocked. Measured 2026-09-08: 7signs.com returns
+# 403 to Australia and 200 elsewhere (a real block), while imperium777.com
+# returns 403 to every vantage (not a block at all).
+#
+# The control never leaves this instance's country assignment -- it is this
+# box's own connection, not another country's exit. If the control gets no
+# status at all the original verdict stands, so a flaky local link cannot erase
+# a real block.
+PROXY_BLOCK_CODE_CONTROL=1
+
 # HTTP status codes that count as a block when the probe goes through the proxy.
 # 451 is the explicit legal one. 403 is included because an ACMA-blocked site
 # answers the AU exit with a bare 403 while serving the identical request fine
