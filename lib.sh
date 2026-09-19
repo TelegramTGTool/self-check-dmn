@@ -21,6 +21,7 @@ country_iso() {
         philippines|ph)       echo "ph" ;;
         vietnam|viet\ nam|vn) echo "vn" ;;
         india|in)             echo "in" ;;
+        cambodia|kh)          echo "kh" ;;
         *)                    echo "" ;;
     esac
 }

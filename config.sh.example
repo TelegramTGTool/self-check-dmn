@@ -41,7 +41,7 @@ FETCH_LIMIT=50
 # Country pool this instance checks (GET /cron/domain-list?country=...).
 # The checker probes from inside one country, so it must only be handed the
 # merchants registered for that country. Known values come from
-# config/merchants.php on the API host: Malaysia, Australia.
+# config/merchants.php on the API host: Malaysia, Australia, Cambodia.
 # Empty/unset = let the API use its own default (Malaysia).
 # Note the country filter runs BEFORE offset/limit, so each country has its
 # own pool numbered from 0 — don't carry offsets across countries.
@@ -149,6 +149,17 @@ PROXY_SESSION_TTL=10
 #       "OPTUS=__asn.4804"
 #       "VODAFONE=__asn.133612"
 #   )
+# For Cambodian mobile carriers (FETCH_COUNTRY="Cambodia", __cr.kh):
+#   TELCO_LIST=(CAMGSM VIETTEL AXIATA)
+#   TELCO_PROXY_MAP=(
+#       "CAMGSM=__asn.17976"      # CAMGSM / Cellcard, verified 2026-09-19
+#       "VIETTEL=__asn.38623"     # verified
+#       "AXIATA=__asn.45498"      # verified
+#   )
+# Do NOT use AS17926 (Telecom Cambodia): it is a fixed-line operator with no
+# exit in the MOBILE plan, so the gateway returns an empty body (9/9 probes),
+# proxy_health_check fails the control domain, and that telco's batch is
+# skipped (no wrong verdicts, just no data).
 TELCO_PROXY_MAP=()
 
 # Timeouts for probes that go through the gateway. These are deliberately far

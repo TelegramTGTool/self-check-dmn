@@ -78,9 +78,13 @@ secret must match `CRON_API_KEY` in the Laravel `.env` on the API host.
 ### Choosing the country pool
 
 Set `FETCH_COUNTRY` in `config.sh` to the country this box probes from
-(`Malaysia` or `Australia` — the list lives in `config/merchants.php` on the
-API host, and the merchants UI offers the same values per domain). Leaving it
-empty lets the API apply its own default, Malaysia.
+(`Malaysia`, `Australia` or `Cambodia` — the list lives in
+`config/merchants.php` on the API host, and the merchants UI offers the same
+values per domain). Leaving it empty lets the API apply its own default,
+Malaysia.
+
+Adding a new country touches four places; see the `add-supported-country`
+skill in `.claude/skills/` for the checklist and the ASN-verification step.
 
 Each country is an independent pool, numbered from 0. The country filter runs
 **before** `offset`/`limit`, so a Malaysian instance at `FETCH_OFFSET=300` and
