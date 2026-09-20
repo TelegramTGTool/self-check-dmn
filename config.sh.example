@@ -267,10 +267,38 @@ DNS_DISCOVERY_ENABLED=1
 # Empty = derive it from FETCH_COUNTRY.
 DNS_COUNTRY_ISO=""
 
+# Keep the discovered resolvers in the country named by FETCH_COUNTRY, the way
+# PROXY_COUNTRY_FOLLOWS_FETCH keeps the proxy exit there.
+#
+# Both halves of a session are NATIONAL -- the resolver sits inside one country
+# and the sinkhole belongs to that country's regulator -- and the session file
+# outlives a FETCH_COUNTRY switch, because discovery is best-effort and a.sh
+# carries on when it fails. Without this, an Australian session would be
+# re-tested, still enforce (ACMA has not gone anywhere), and be written back as
+# the new country's session: Cambodian domains judged against an AU resolver
+# and the ACMA sinkhole. That is a wrong verdict, not a skipped batch.
+#
+# With this on, a session whose recorded ISO differs from FETCH_COUNTRY's is
+# discarded and full discovery runs for the new country. Set to 0 only to
+# deliberately probe one country's domains with another's resolvers.
+DNS_SESSION_FOLLOWS_FETCH=1
+
 # How hard discovery works each run. Defaults are tuned for a fast pre-scan
 # pass; raise DNS_MAX_CANDIDATES if a country's public resolvers are flaky.
 DNS_SAMPLE_DOMAINS=8        # domains sampled from this instance's own list
 DNS_MAX_CANDIDATES=120      # resolvers health-checked per run
+
+# Minimum public-dns.info `reliability` (0.00-1.00) a resolver must carry to be
+# considered at all. That column is the share of recent checks the resolver
+# actually answered, so it prunes the long tail of entries the list still
+# carries but that have not responded in years -- each of which otherwise costs
+# a full DNS_HEALTH_TIMEOUT during the health check.
+#
+# Read from <iso>.csv; the plain <iso>.txt has no reliability column, so if the
+# CSV cannot be fetched the run falls back to the unfiltered list rather than
+# failing. Measured 2026-09-20: au 575 listed -> 440 at >= 0.90,
+# kh 29 -> 20. Lower it if a country's filtered list comes out too thin.
+DNS_MIN_RELIABILITY=0.90
 DNS_PROBE_RESOLVERS=12      # healthy resolvers actually probed for a blocklist
 DNS_KEEP_RESOLVERS=4        # enforcing resolvers kept for the scan
 DNS_SINKHOLE_MIN_HITS=3     # distinct domains that must share one bogus IP

@@ -153,6 +153,11 @@ mixed in among the mobile ones.
   standalone probe. Add the new telcos there too. Its `COUNTRY_RESOLVERS` has no
   entry for the new ISO, which is fine: it falls through to the HTTP stage.
   Run `python3 dnscheck.py <iso>` to discover and cache the enforcing resolvers.
+- Switching an existing box's `FETCH_COUNTRY` leaves the previous country's
+  `resolvers.session` in `WORK_DIR`. `DNS_SESSION_FOLLOWS_FETCH=1` (default)
+  discards it on both sides — `lib.sh` refuses to apply it and
+  `discover-resolvers.sh` refuses to re-test it — so you do not have to delete
+  it by hand. The file is left in place so switching back reuses it.
 - DNS enforcement is discovered per run, but it needs at least
   `DNS_SINKHOLE_MIN_HITS` (3) genuinely blocked domains in the fetched sample.
   A brand-new country with no blocked domains yet will log "no enforcing

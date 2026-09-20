@@ -36,6 +36,7 @@ load_config
 : "${DNS_CONTROL_DOMAIN:=www.google.com}" # proves a candidate resolver is alive
 : "${DNS_SAMPLE_DOMAINS:=8}"              # domains sampled from the work list
 : "${DNS_MAX_CANDIDATES:=120}"            # candidates health-checked per run
+: "${DNS_MIN_RELIABILITY:=0.90}"          # public-dns.info reliability floor
 : "${DNS_PROBE_RESOLVERS:=12}"            # healthy resolvers probed for a block
 : "${DNS_KEEP_RESOLVERS:=4}"              # enforcing resolvers kept for the scan
 : "${DNS_SINKHOLE_MIN_HITS:=3}"           # distinct domains sharing one bogus IP
@@ -232,9 +233,24 @@ resolver_sinkhole() {
 
 # ---- Fast path: are last run's resolvers still enforcing? --------------------
 PREV_RESOLVERS=""
+PREV_ISO=""
 if [[ -f "${SESSION_FILE}" ]]; then
     # shellcheck disable=SC1090
     PREV_RESOLVERS="$(. "${SESSION_FILE}" 2>/dev/null && printf '%s' "${DNS_SESSION_RESOLVERS:-}")"
+    # shellcheck disable=SC1090
+    PREV_ISO="$(. "${SESSION_FILE}" 2>/dev/null && printf '%s' "${DNS_SESSION_ISO:-}")"
+fi
+
+# The fast path re-tests last run's resolvers instead of discovering fresh
+# ones. Those resolvers belong to the country they were found in, and they keep
+# enforcing their own regulator's list forever -- an AU resolver still answers
+# with the ACMA sinkhole when FETCH_COUNTRY has moved on to Cambodia. It would
+# pass the re-test and get written back as THIS country's session. So a session
+# from another ISO is discarded and full discovery runs for ${ISO}.
+if [[ "${DNS_SESSION_FOLLOWS_FETCH:-1}" == "1" \
+   && -n "${PREV_RESOLVERS}" && -n "${PREV_ISO}" && "${PREV_ISO}" != "${ISO}" ]]; then
+    dlog "Previous session was discovered for '${PREV_ISO}'; this run is '${ISO}'. Discarding it and discovering ${ISO} resolvers from scratch."
+    PREV_RESOLVERS=""
 fi
 
 KEPT=""; KEPT_N=0; SINKHOLES=""
@@ -265,13 +281,43 @@ fi
 if (( KEPT_N == 0 )); then
     # shellcheck disable=SC2059
     ns_file="$(printf "${NS_CACHE}" "${ISO}")"
-    if curl -fsS --max-time 30 "${DNS_NS_LIST_URL}/${ISO}.txt" -o "${ns_file}.tmp" 2>/dev/null; then
+
+    # public-dns.info publishes a CSV beside the plain list, carrying a
+    # `reliability` column (0.00-1.00: the share of recent checks the resolver
+    # answered). Filtering on it up front spends the DNS_MAX_CANDIDATES health
+    # budget on resolvers that actually respond -- the .txt is a flat list that
+    # still includes entries last seen years ago, and the health check pays a
+    # full timeout for each of those.
+    #
+    # Fields are counted from the RIGHT: `as_org` is quoted and may contain
+    # commas ("SMART AXIATA Co., Ltd."), so the field count varies per row,
+    # while the trailing three (reliability, checked_at, created_at) never do.
+    # $(NF-2) is therefore reliability on every row; $1 is always the IP.
+    csv_tmp="${ns_file}.csv.tmp"
+    rel_ok=0
+    if curl -fsS --max-time 30 "${DNS_NS_LIST_URL}/${ISO}.csv" -o "${csv_tmp}" 2>/dev/null \
+       && awk -F, -v min="${DNS_MIN_RELIABILITY}" \
+              'NR>1 && $(NF-2)+0 >= min { print $1 }' "${csv_tmp}" \
+              > "${ns_file}.tmp" 2>/dev/null \
+       && [[ -s "${ns_file}.tmp" ]]; then
+        ns_kept="$(grep -c . "${ns_file}.tmp" 2>/dev/null || echo 0)"
+        ns_listed="$(grep -c . "${csv_tmp}" 2>/dev/null || echo 1)"
         mv "${ns_file}.tmp" "${ns_file}"
-        dlog "Fetched $(grep -c . "${ns_file}" 2>/dev/null || echo 0) candidate ${ISO} resolvers."
-    else
-        rm -f "${ns_file}.tmp"
-        [[ -s "${ns_file}" ]] || bail "Could not fetch ${DNS_NS_LIST_URL}/${ISO}.txt and no cached list."
-        dlog "Using cached resolver list (download failed)."
+        rel_ok=1
+        dlog "Fetched ${ns_kept} of $(( ns_listed - 1 )) listed ${ISO} resolvers (reliability >= ${DNS_MIN_RELIABILITY})."
+    fi
+    rm -f "${csv_tmp}" "${ns_file}.tmp"
+
+    # Fallback: the plain list, unfiltered, exactly as before.
+    if (( rel_ok == 0 )); then
+        if curl -fsS --max-time 30 "${DNS_NS_LIST_URL}/${ISO}.txt" -o "${ns_file}.tmp" 2>/dev/null; then
+            mv "${ns_file}.tmp" "${ns_file}"
+            dlog "Fetched $(grep -c . "${ns_file}" 2>/dev/null || echo 0) candidate ${ISO} resolvers."
+        else
+            rm -f "${ns_file}.tmp"
+            [[ -s "${ns_file}" ]] || bail "Could not fetch ${DNS_NS_LIST_URL}/${ISO}.txt and no cached list."
+            dlog "Using cached resolver list (download failed)."
+        fi
     fi
 
     CANDIDATES=()

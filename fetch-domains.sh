@@ -91,6 +91,11 @@ state_set TELCO_STARTED_AT  ""
 state_set SUMMARY_PER_TELCO ""
 state_set SWITCH_UNTIL      "0"
 state_set DONE              "0"
+# The country the API actually served this pool for (X-Domain-Country). With
+# FETCH_COUNTRY empty the API picks its own default, and this header is then
+# the only place that answer exists -- the DNS session guard in lib.sh needs it
+# to tell a stale foreign session from the current country's.
+state_set POOL_COUNTRY       "${pool_country:-${FETCH_COUNTRY}}"
 
 # Reset remarks file for this run.
 : > "${REMARKS_FILE}"

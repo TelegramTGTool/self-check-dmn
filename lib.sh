@@ -217,6 +217,44 @@ load_config() {
         # shellcheck disable=SC1090
         source "${DNS_SESSION_FILE}"
     fi
+
+    # ---- Keep the DNS session in the country being checked -------------------
+    # discover-resolvers.sh stamps every session with the country it was
+    # discovered for, because both halves of it are NATIONAL: the pinned
+    # resolver sits inside that country and the learned sinkhole belongs to
+    # that country's regulator. Applying a session left behind by a previous
+    # FETCH_COUNTRY therefore does not merely weaken the DNS stage, it answers
+    # with the wrong regulator -- an Australian session judging Cambodian
+    # domains pins an AU resolver and matches the ACMA sinkhole, producing
+    # wrong verdicts rather than a skipped batch.
+    #
+    # This is a live hazard, not a theoretical one: discovery is best-effort
+    # and a.sh explicitly continues when it fails, so the stale file really
+    # does survive a FETCH_COUNTRY switch. Same reasoning as
+    # PROXY_COUNTRY_FOLLOWS_FETCH above, applied to the DNS half.
+    #
+    # Only a session that states its own ISO is checked, so a hand-written file
+    # keeps working. Set DNS_SESSION_FOLLOWS_FETCH=0 to accept any country's.
+    : "${DNS_SESSION_FOLLOWS_FETCH:=1}"
+    if [[ "${DNS_SESSION_FOLLOWS_FETCH}" == "1" && -n "${DNS_SESSION_ISO:-}" ]]; then
+        local _dns_want_iso _dns_want_name
+        _dns_want_name="${FETCH_COUNTRY}"
+        _dns_want_iso="${DNS_COUNTRY_ISO:-$(country_iso "${FETCH_COUNTRY}")}"
+        # FETCH_COUNTRY empty means "let the API pick its default", so the only
+        # record of which country this pool is for is the X-Domain-Country
+        # header fetch-domains.sh stored. Without this the guard would have
+        # nothing to compare and would wave a foreign session through.
+        if [[ -z "${_dns_want_iso}" ]]; then
+            _dns_want_name="$(state_get POOL_COUNTRY)"
+            _dns_want_iso="$(country_iso "${_dns_want_name}")"
+        fi
+        if [[ -n "${_dns_want_iso}" && "${_dns_want_iso}" != "${DNS_SESSION_ISO}" ]]; then
+            log "DNS session was discovered for ${DNS_SESSION_COUNTRY:-${DNS_SESSION_ISO}} (${DNS_SESSION_ISO}) but this pool is ${_dns_want_name:-?} (${_dns_want_iso}). Ignoring it; keeping the DNS settings from config.sh."
+            DNS_SESSION_RESOLVERS=""
+            DNS_SESSION_SINKHOLES=""
+        fi
+    fi
+
     if [[ -n "${DNS_SESSION_RESOLVERS}" ]]; then
         # Pin the first discovered resolver; resolve_host_ips_local() walks the
         # rest as fallbacks. An explicit PROXY_DNS_RESOLVER in config.sh wins.
