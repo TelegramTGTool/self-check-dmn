@@ -299,6 +299,104 @@ DNS_MAX_CANDIDATES=120      # resolvers health-checked per run
 # failing. Measured 2026-09-20: au 575 listed -> 440 at >= 0.90,
 # kh 29 -> 20. Lower it if a country's filtered list comes out too thin.
 DNS_MIN_RELIABILITY=0.90
+
+# ---- Blocking by refusal (regulators that do not sinkhole) ------------------
+# MY and AU point a blocked name at a sinkhole address, which is what the
+# learned-sinkhole machinery above detects. Cambodia does not: its resolvers
+# answer NXDOMAIN or SERVFAIL instead, so there is no address to match and a
+# blocked domain reads as clean.
+#
+# Measured 2026-09-20 for hb88khm1.com (live, registered, Cloudflare NS):
+#   8.8.8.8 / 1.1.1.1      NOERROR  104.21.34.189
+#   139.134.5.51   (AU)    NOERROR  104.21.34.189
+#   1.9.63.97      (MY)    NOERROR  172.67.207.15
+#   203.189.130.131 (KH)   NXDOMAIN, 3/3 tries
+# 203.189.130.131 answers google.com, wikipedia.org, judibox.com and
+# regal33.net correctly, so it refuses that one name rather than being broken.
+#
+# Enforcement is NOT uniform across Cambodian ISPs, the same way it is not
+# inside one Malaysian ASN. 203.189.130.131 (COGETEL) enforces consistently;
+# 103.242.58.166/.167 (SEATEL) measured 0/8, 4/8 and 1/8 refusals on three
+# runs minutes apart, and 36.37.181.118 and 111.118.147.236 never enforce.
+# A refusal seen once is noise, which is what DNS_SINKHOLE_MIN_HITS filters.
+#
+# DNS_BLOCK_QUORUM does NOT need lowering for Cambodia: the quorum is clamped
+# to the number of resolvers that answered, so a session holding one enforcing
+# resolver needs one agreement. Be aware that this also means the quorum gives
+# no protection while only one KH resolver is enforcing -- that one resolver
+# having a bad minute is enough to mark domains blocked. Adding more enforcing
+# KH resolvers to DNS_EXTRA_RESOLVERS is what restores it.
+#
+# Set to 1 to count an explicit refusal as a block. It fires only AFTER the
+# sinkhole check misses, and only when the name resolves at DNS_TRUTH_RESOLVER
+# and DNS_BLOCK_QUORUM in-country resolvers agree -- a domain that is merely
+# dead NXDOMAINs everywhere, truth resolver included, and is skipped. A timeout
+# never counts: a dead resolver answers nothing for everything, which would
+# otherwise mark a whole batch blocked. Reason code: dns_refused.
+#
+# The test is on the RESPONSE, not the response code. The same KH resolver
+# answered NXDOMAIN for six of eight domains in one run and NOERROR with an
+# empty answer (NODATA) twenty minutes later, so matching rcodes flapped. What
+# is stable is "replied, but gave no address, for a name that resolves
+# globally" -- which covers NXDOMAIN, SERVFAIL and NODATA together.
+#
+# Leave at 0 for Malaysia and Australia -- they sinkhole, so this only adds
+# risk there. Turn it on for Cambodia.
+DNS_REFUSAL_BLOCK=0
+
+# Resolvers to consider IN ADDITION to the public-dns.info list. Space
+# separated, as many as you like:
+#   DNS_EXTRA_RESOLVERS="203.189.130.131 103.242.58.166 103.242.58.167"
+# Commas are accepted too, and a malformed entry is logged and skipped rather
+# than silently failing the health check. That list only carries resolvers open to the whole internet, while
+# the ones a regulator actually enforces on are often an ISP's own recursive
+# resolver -- Cambodia's enforcing resolver 203.189.130.131 (COGETEL AS23673)
+# is not listed there at all, so discovery kept bailing with "no enforcing
+# resolver" while sitting next to one.
+#
+# These are seeded, not trusted: each still has to pass the health check and
+# prove it enforces before it is kept, so a wrong entry is dropped. They must
+# be inside FETCH_COUNTRY -- a resolver from another country would answer with
+# another regulator's verdict.
+#
+# Cambodia (COGETEL): measured 2026-09-21 against the live 147-domain KH pool,
+# it returned NXDOMAIN for 7 of the first 12 while 8.8.8.8 resolved all 12,
+# including binance.com and discord.com; the other 5 resolved normally. It
+# refuses a specific subset rather than everything, which is what a blocklist
+# looks like.
+DNS_EXTRA_RESOLVERS="203.189.130.131"
+
+# Remember which resolvers actually answered, list them in the log, and put
+# them at the FRONT of the candidate list on the next run.
+#
+# The public-dns.info list is a 2023 snapshot -- for kh, 29 listed, 20 above
+# the reliability floor, and only 4-5 alive on any given run -- so the health
+# check is the slow part of a cold start, and a run where the one enforcing
+# resolver happens to miss it bails with no session at all. That happened twice
+# while testing Cambodia. Front-loading addresses known to be live makes it
+# rare, and the answered list is written to
+# ${WORK_DIR}/resolvers.answered.<iso>.txt so you can read it yourself.
+#
+# It only reorders candidates: every one still has to pass the health check and
+# prove it enforces, so this cannot change a verdict. Off by default so the
+# Malaysian and Australian boxes behave exactly as before; turn it on per box.
+DNS_ANSWERED_CACHE=0
+
+# Put every resolver that ANSWERED into the session, not just the ones proven
+# to enforce. Cambodian ISPs do not run the same blocklist -- COGETEL withholds
+# addresses that SEATEL resolves normally -- so querying all of them finds
+# blocks a single-ISP view misses.
+#
+# Safe only because lib.sh sizes the quorum from DNS_SESSION_ENFORCING (the
+# proven subset) rather than from everything that replied. Without that, adding
+# two non-enforcing resolvers to a 1-enforcer session turns a 1/1 agreement
+# into 1/3 against a need of 2, and every blocked domain reports clean --
+# measured on binance.com, discord.com and hb88cam2.com.
+DNS_SESSION_KEEP_ANSWERED=0
+
+
+
+
 DNS_PROBE_RESOLVERS=12      # healthy resolvers actually probed for a blocklist
 DNS_KEEP_RESOLVERS=4        # enforcing resolvers kept for the scan
 DNS_SINKHOLE_MIN_HITS=3     # distinct domains that must share one bogus IP

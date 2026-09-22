@@ -212,6 +212,7 @@ load_config() {
     # set, so the scan behaves exactly as it did before this feature existed.
     DNS_SESSION_FILE="${WORK_DIR}/resolvers.session"
     : "${DNS_SESSION_RESOLVERS:=}"
+    : "${DNS_SESSION_ENFORCING:=}"
     : "${DNS_SESSION_SINKHOLES:=}"
     if [[ -f "${DNS_SESSION_FILE}" ]]; then
         # shellcheck disable=SC1090
@@ -235,6 +236,13 @@ load_config() {
     #
     # Only a session that states its own ISO is checked, so a hand-written file
     # keeps working. Set DNS_SESSION_FOLLOWS_FETCH=0 to accept any country's.
+    # Guard 1b (dns_refusal_quorum): treat an explicit refusal from the
+    # in-country resolvers as a block, for regulators that do not sinkhole.
+    # Off by default so MY/AU behaviour is untouched.
+    : "${DNS_REFUSAL_BLOCK:=0}"
+    : "${DNS_TRUTH_RESOLVER:=8.8.8.8}"
+    : "${DNS_CONTROL_DOMAIN:=www.google.com}"
+
     : "${DNS_SESSION_FOLLOWS_FETCH:=1}"
     if [[ "${DNS_SESSION_FOLLOWS_FETCH}" == "1" && -n "${DNS_SESSION_ISO:-}" ]]; then
         local _dns_want_iso _dns_want_name
@@ -251,6 +259,7 @@ load_config() {
         if [[ -n "${_dns_want_iso}" && "${_dns_want_iso}" != "${DNS_SESSION_ISO}" ]]; then
             log "DNS session was discovered for ${DNS_SESSION_COUNTRY:-${DNS_SESSION_ISO}} (${DNS_SESSION_ISO}) but this pool is ${_dns_want_name:-?} (${_dns_want_iso}). Ignoring it; keeping the DNS settings from config.sh."
             DNS_SESSION_RESOLVERS=""
+            DNS_SESSION_ENFORCING=""
             DNS_SESSION_SINKHOLES=""
         fi
     fi
@@ -995,6 +1004,149 @@ dns_block_quorum() {
     (( agree > 0 && agree >= need ))
 }
 
+# Ask <resolver> for <host> once and report BOTH halves of the answer as
+# "<STATUS> <ip> <ip>...", e.g. "NOERROR 104.21.12.177", "NXDOMAIN", "NOERROR".
+# A trailing status with no address is the NODATA case. An EMPTY string means
+# nothing came back at all, which is a dead resolver, not an answer.
+# Only the ANSWER section is read, so a CNAME chain's addresses still count.
+_resolve_probe_at() {
+    local host="$1" resolver="${2:-}" out st ips
+    if command -v dig >/dev/null 2>&1; then
+        out="$(dig +time="${DNS_QUERY_TIMEOUT:-3}" +tries=1 ${resolver:+@"${resolver}"} \
+               "${host}" A 2>/dev/null)" || true
+        st="$(printf '%s' "${out}" | sed -n 's/.*status: \([A-Z]*\).*/\1/p' | head -1)"
+        [[ -n "${st}" ]] || { echo ""; return 0; }
+        ips="$(printf '%s' "${out}" \
+               | awk '/^;; ANSWER SECTION:/{a=1;next} /^$/{a=0} a && $4=="A"{print $5}' \
+               | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | tr '\n' ' ')"
+        printf '%s %s' "${st}" "${ips}"
+        return 0
+    fi
+    if command -v host >/dev/null 2>&1; then
+        out="$(host -W "${DNS_QUERY_TIMEOUT:-3}" -t A "${host}" ${resolver:+"${resolver}"} 2>&1)" || true
+        case "${out}" in
+            *"has address"*) printf 'NOERROR %s' "$(printf '%s' "${out}" \
+                                 | sed -n 's/.*has address \([0-9.]*\).*/\1/p' | tr '\n' ' ')" ;;
+            *NXDOMAIN*)      echo "NXDOMAIN" ;;
+            *SERVFAIL*)      echo "SERVFAIL" ;;
+            *REFUSED*)       echo "REFUSED"  ;;
+            *"has no A record"*) echo "NOERROR" ;;
+            *)               echo "" ;;
+        esac
+        return 0
+    fi
+    echo ""
+}
+
+# Does this resolver still serve a name that is definitely fine? A resolver in
+# a broken state withholds addresses for EVERYTHING, which is indistinguishable
+# from enforcement when you look at one domain at a time. Cached per resolver
+# for the life of the process, so it costs one query per resolver per run.
+# printf -v + indirect expansion because bash 3.2 (macOS) has no associative
+# arrays and the probe boxes are not guaranteed to be newer.
+_resolver_serves_control() {
+    local r="$1" key v ips
+    key="_DNSCTL_${r//[.:]/_}"
+    v="${!key:-}"
+    if [[ -n "${v}" ]]; then
+        [[ "${v}" == "1" ]]
+        return
+    fi
+    ips="$(_resolve_host_ips_at "${DNS_CONTROL_DOMAIN}" "${r}")"
+    if [[ -n "${ips}" ]]; then
+        printf -v "${key}" '%s' 1
+        return 0
+    fi
+    printf -v "${key}" '%s' 0
+    return 1
+}
+
+# ---- Guard 1b: in-country resolvers give a live name no address -------------
+# Not every regulator sinkholes. Cambodia's resolvers simply do not hand back
+# an address for a blocked name, so Guard 1 -- which matches a sinkhole ADDRESS
+# -- has nothing to match and the domain reads as clean.
+#
+# The response CODE is not the signal, which cost a while to learn. Measured on
+# 2026-09-21 against 203.189.130.131 (COGETEL AS23673) and the live KH pool,
+# the same six of eight domains came back NXDOMAIN in one run and NOERROR with
+# an empty answer (NODATA) twenty minutes later, while the other two returned
+# their real address both times. Matching on NXDOMAIN alone therefore dropped
+# from 6 hits to 1 between runs and discovery flapped. The stable rule is
+# "answered, but gave no address, for a name that DOES resolve globally", which
+# covers NXDOMAIN, SERVFAIL and NODATA alike.
+#
+# Guards against the obvious false positives:
+#   * the name must resolve at DNS_TRUTH_RESOLVER -- a dead domain answers
+#     nothing everywhere, truth resolver included;
+#   * the resolver must actually REPLY. A timeout is not evidence: a dead
+#     resolver answers nothing for every domain, which would otherwise mark a
+#     whole batch blocked;
+#   * DNS_BLOCK_QUORUM resolvers must agree (clamped to how many replied).
+# Off by default (DNS_REFUSAL_BLOCK=0); the Cambodia config turns it on.
+#
+# Sets DNS_REFUSAL_STATUS / DNS_REFUSAL_RESOLVER / DNS_REFUSAL_AGREE /
+# DNS_REFUSAL_TOTAL. Returns 0 when the agreement threshold is met.
+dns_refusal_quorum() {
+    local host="$1"
+    local r probe st ips agree=0 total=0 hit_st="" hit_res="" enforcer_agreed=0
+
+    DNS_REFUSAL_STATUS=""; DNS_REFUSAL_RESOLVER=""
+    DNS_REFUSAL_AGREE=0; DNS_REFUSAL_TOTAL=0
+
+    [[ "${DNS_REFUSAL_BLOCK}" == "1" ]] || return 1
+
+    # A name nobody can resolve is dead, not blocked.
+    [[ -n "$(_resolve_host_ips_at "${host}" "${DNS_TRUTH_RESOLVER}")" ]] || return 1
+
+    for r in ${DNS_SESSION_RESOLVERS:-}; do
+        probe="$(_resolve_probe_at "${host}" "${r}")"
+        [[ -n "${probe}" ]] || continue       # no reply at all: not evidence
+        total=$(( total + 1 ))
+        st="${probe%% *}"
+        ips="${probe#"${st}"}"
+        ips="${ips// /}"
+        if [[ -z "${ips}" ]]; then            # replied, but handed back no address
+            # ...unless it is withholding from everyone, which is breakage.
+            # discover-resolvers.sh screens for this too, but a resolver can
+            # break between discovery and the scan, and a proven enforcer is
+            # trusted on its own below.
+            _resolver_serves_control "${r}" || continue
+            agree=$(( agree + 1 ))
+            case " ${DNS_SESSION_ENFORCING:-} " in
+                *" ${r} "*) enforcer_agreed=1 ;;
+            esac
+            if [[ -z "${hit_st}" ]]; then
+                hit_st="${st}"; hit_res="${r}"
+            fi
+        fi
+    done
+
+    DNS_REFUSAL_STATUS="${hit_st}"; DNS_REFUSAL_RESOLVER="${hit_res}"
+    DNS_REFUSAL_AGREE="${agree}"; DNS_REFUSAL_TOTAL="${total}"
+
+    # Two ways to reach a verdict, because the session can hold resolvers that
+    # were never proven to enforce (DNS_SESSION_KEEP_ANSWERED=1):
+    #
+    #   * a resolver PROVEN to enforce withheld the address, or
+    #   * DNS_BLOCK_QUORUM resolvers withheld it independently.
+    #
+    # Cambodian ISPs run different lists -- COGETEL withholds addresses SEATEL
+    # resolves normally, and 96super.co is the reverse -- so a wider session
+    # finds more blocks. But sizing the quorum down to the single proven
+    # enforcer would also let ONE unproven, flaky resolver convict a domain on
+    # its own, and SEATEL measured 0, 4 and 1 withheld of 8 across three runs
+    # minutes apart. Requiring either a proven enforcer or real agreement keeps
+    # both: COGETEL alone still counts, a lone SEATEL hiccup does not, and two
+    # unproven resolvers agreeing do.
+    (( agree > 0 )) || return 1
+    (( enforcer_agreed == 1 )) && return 0
+
+    local need="${DNS_BLOCK_QUORUM}"
+    (( total < need )) && need="${total}"
+    (( need < 1 )) && need=1
+    (( agree >= need ))
+}
+
 # ---- Guard 2: is this 403/451 specific to the exit? -------------------------
 # The reason 403 counts as a block at all is the assumption noted above: an
 # ACMA-blocked site "answers the AU exit with a bare 403 while serving the same
@@ -1060,6 +1212,14 @@ check_one_domain_via_proxy() {
             CHECK_RESULT="blocked"
             CHECK_REASON="mcmc_block_ip"
             CHECK_EVIDENCE="ip=${DNS_QUORUM_IP} dns=local:${DNS_QUORUM_RESOLVER} telco=${telco:-?} agree=${DNS_QUORUM_AGREE}/${DNS_QUORUM_TOTAL}"
+            return
+        fi
+        # No sinkhole to match. For a regulator that blocks by refusing to
+        # answer at all (Cambodia), the refusal itself is the evidence.
+        if dns_refusal_quorum "${host}"; then
+            CHECK_RESULT="blocked"
+            CHECK_REASON="dns_refused"
+            CHECK_EVIDENCE="rcode=${DNS_REFUSAL_STATUS} dns=local:${DNS_REFUSAL_RESOLVER} telco=${telco:-?} agree=${DNS_REFUSAL_AGREE}/${DNS_REFUSAL_TOTAL}"
             return
         fi
     elif [[ "${PROXY_LOCAL_DNS_CHECK}" == "1" ]]; then

@@ -37,6 +37,10 @@ load_config
 : "${DNS_SAMPLE_DOMAINS:=8}"              # domains sampled from the work list
 : "${DNS_MAX_CANDIDATES:=120}"            # candidates health-checked per run
 : "${DNS_MIN_RELIABILITY:=0.90}"          # public-dns.info reliability floor
+: "${DNS_EXTRA_RESOLVERS:=}"              # extra in-country resolvers, space separated
+: "${DNS_ANSWERED_CACHE:=0}"              # remember which resolvers answered
+: "${DNS_SESSION_KEEP_ANSWERED:=0}"       # session carries every answering resolver
+: "${DNS_REFUSAL_BLOCK:=0}"               # keep resolvers that REFUSE, not sinkhole
 : "${DNS_PROBE_RESOLVERS:=12}"            # healthy resolvers probed for a block
 : "${DNS_KEEP_RESOLVERS:=4}"              # enforcing resolvers kept for the scan
 : "${DNS_SINKHOLE_MIN_HITS:=3}"           # distinct domains sharing one bogus IP
@@ -69,6 +73,7 @@ fi
 
 SESSION_FILE="${WORK_DIR}/resolvers.session"
 NS_CACHE="${WORK_DIR}/nameservers.%s.txt"
+ANSWERED_CACHE="${WORK_DIR}/resolvers.answered.%s.txt"
 
 dlog() { log "DNS-DISCOVERY $*"; }
 
@@ -105,6 +110,74 @@ dns_a() {                      # dns_a <resolver> <host> -> IPv4s, one per line
                 | sed -n 's/^Address: *\([0-9.]*\)$/\1/p' || true
             ;;
     esac
+}
+
+# One query, both halves of the answer: "<STATUS> <ip> <ip>...".
+# Empty means nothing replied. Only the ANSWER section counts, so a CNAME
+# chain's addresses still register.
+dns_probe() {                  # dns_probe <resolver> <host>
+    local res="$1" h="$2" out st ips
+    case "${DNS_CLIENT}" in
+        dig)
+            out="$(dig +time="${DNS_QUERY_TIMEOUT}" +tries=1 "@${res}" "${h}" A 2>/dev/null)" || true
+            st="$(printf '%s' "${out}" | sed -n 's/.*status: \([A-Z]*\).*/\1/p' | head -1)"
+            [[ -n "${st}" ]] || { echo ""; return 0; }
+            ips="$(printf '%s' "${out}" \
+                   | awk '/^;; ANSWER SECTION:/{a=1;next} /^$/{a=0} a && $4=="A"{print $5}' \
+                   | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | tr '\n' ' ')"
+            printf '%s %s' "${st}" "${ips}"
+            ;;
+        host|nslookup)
+            out="$(host -W "${DNS_QUERY_TIMEOUT}" -t A "${h}" "${res}" 2>&1)" || true
+            case "${out}" in
+                *"has address"*)     printf 'NOERROR %s' "$(printf '%s' "${out}" \
+                                         | sed -n 's/.*has address \([0-9.]*\).*/\1/p' | tr '\n' ' ')" ;;
+                *NXDOMAIN*)          echo "NXDOMAIN" ;;
+                *SERVFAIL*)          echo "SERVFAIL" ;;
+                *REFUSED*)           echo "REFUSED"  ;;
+                *"has no A record"*) echo "NOERROR"  ;;
+                *)                   echo ""         ;;
+            esac
+            ;;
+    esac
+}
+
+# A resolver that REPLIES but hands back no address for names that resolve
+# globally is enforcing too. Cambodia blocks that way instead of sinkholing, so
+# resolver_sinkhole() finds no bogus address to tally and would discard the very
+# resolvers that enforce.
+#
+# Tested on the RESPONSE, not the response code: the same resolver answered
+# NXDOMAIN for six of eight KH domains in one run and NOERROR-with-no-address
+# twenty minutes later, so an rcode match flapped between 6 hits and 1.
+# Requires the same DNS_SINKHOLE_MIN_HITS agreement across unrelated domains,
+# so one dead name or one lost packet cannot qualify a resolver, and a resolver
+# that never replies scores zero rather than everything. truth_hosts only ever
+# holds names that DID resolve at DNS_TRUTH_RESOLVER.
+resolver_refuses() {
+    local res="$1" h probe st ips n=0 served=0
+    for h in ${truth_hosts[@]+"${truth_hosts[@]}"}; do
+        probe="$(dns_probe "${res}" "${h}")"
+        [[ -n "${probe}" ]] || continue
+        st="${probe%% *}"
+        ips="${probe#"${st}"}"
+        ips="${ips// /}"
+        if [[ -z "${ips}" ]]; then
+            n=$(( n + 1 ))
+        else
+            served=$(( served + 1 ))
+        fi
+    done
+
+    # Enforcing means withholding SOME names while still serving others. A
+    # resolver that withholds every name is broken, not enforcing -- and the
+    # difference matters enormously, because the verdict path trusts a proven
+    # enforcer on its own. Observed 2026-09-21: 103.242.58.166 entered a state
+    # where it returned no address for anything, qualified here on 8 of 8
+    # "refusals", and then marked www.google.com, wikipedia.org and
+    # example.com as blocked.
+    (( served > 0 )) || return 1
+    (( n >= DNS_SINKHOLE_MIN_HITS ))
 }
 
 # ---- Sample domains: whatever this instance is actually checking -------------
@@ -254,6 +327,7 @@ if [[ "${DNS_SESSION_FOLLOWS_FETCH:-1}" == "1" \
 fi
 
 KEPT=""; KEPT_N=0; SINKHOLES=""
+ANSWERED_ALL=""        # every resolver that replied this run, enforcing or not
 
 # Merge a newline-separated sinkhole list into SINKHOLES, keeping it unique.
 add_sinkholes() {
@@ -271,9 +345,12 @@ if [[ -n "${PREV_RESOLVERS}" ]]; then
         if sink="$(resolver_sinkhole "${res}")" && [[ -n "${sink}" ]]; then
             KEPT="${KEPT}${KEPT:+ }${res}"; KEPT_N=$(( KEPT_N + 1 ))
             add_sinkholes "${sink}"
+        elif [[ "${DNS_REFUSAL_BLOCK}" == "1" ]] && resolver_refuses "${res}"; then
+            KEPT="${KEPT}${KEPT:+ }${res}"; KEPT_N=$(( KEPT_N + 1 ))
         fi
         (( KEPT_N >= DNS_KEEP_RESOLVERS )) && break
     done
+    ANSWERED_ALL="${PREV_RESOLVERS}"
     (( KEPT_N > 0 )) && dlog "Revalidated ${KEPT_N} resolver(s) from the previous session."
 fi
 
@@ -320,9 +397,53 @@ if (( KEPT_N == 0 )); then
         fi
     fi
 
+    # Operator-known resolvers go in FIRST and are never squeezed out by the
+    # DNS_MAX_CANDIDATES cap. public-dns.info only lists resolvers that are open
+    # to the whole internet, and the ones a regulator actually enforces on are
+    # often an ISP's own -- Cambodia's enforcing resolver 203.189.130.131
+    # (COGETEL AS23673) is not on that list at all, so discovery could only ever
+    # pick from non-enforcing candidates and bailed every run.
+    #
+    # Seeded, not trusted: they still face the same health check and the same
+    # enforcement probe as any candidate, so a wrong or dead entry is dropped
+    # rather than believed.
+    # Space separated, any number of entries. Commas are tolerated because
+    # writing them is the obvious mistake and would otherwise collapse the whole
+    # value into one bogus candidate that just quietly fails the health check.
     CANDIDATES=()
+    for _r in ${DNS_EXTRA_RESOLVERS//,/ }; do
+        [[ -n "${_r}" ]] || continue
+        if [[ ! "${_r}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            dlog "Ignoring DNS_EXTRA_RESOLVERS entry '${_r}': not an IPv4 address."
+            continue
+        fi
+        case " ${CANDIDATES[*]+${CANDIDATES[*]}} " in
+            *" ${_r} "*) continue ;;
+        esac
+        CANDIDATES+=("${_r}")
+    done
+    # Resolvers that answered a previous run go next, ahead of the public list.
+    # That list is a 2023 snapshot in which only a handful are still alive, so
+    # the health check is the expensive part of a cold start -- and a run where
+    # the one enforcing resolver happens to miss it ends in a bail with no
+    # session at all. Front-loading known-live addresses makes that rare.
+    # shellcheck disable=SC2059
+    answered_file="$(printf "${ANSWERED_CACHE}" "${ISO}")"
+    if [[ "${DNS_ANSWERED_CACHE}" == "1" && -s "${answered_file}" ]]; then
+        while IFS= read -r _r; do
+            [[ -n "${_r}" ]] || continue
+            case " ${CANDIDATES[*]+${CANDIDATES[*]}} " in
+                *" ${_r} "*) continue ;;
+            esac
+            CANDIDATES+=("${_r}")
+        done < <(grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' "${answered_file}")
+    fi
     while IFS= read -r _r; do
-        [[ -n "${_r}" ]] && CANDIDATES+=("${_r}")
+        [[ -n "${_r}" ]] || continue
+        case " ${CANDIDATES[*]+${CANDIDATES[*]}} " in
+            *" ${_r} "*) continue ;;
+        esac
+        CANDIDATES+=("${_r}")
     done < <(grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' "${ns_file}" \
              | grep -vE "${DNS_EXCLUDE_RESOLVERS}" \
              | head -n "${DNS_MAX_CANDIDATES}")
@@ -354,12 +475,21 @@ if (( KEPT_N == 0 )); then
     done < <(cat "${HEALTH_DIR}"/* 2>/dev/null | head -n "${DNS_PROBE_RESOLVERS}")
     rm -rf "${HEALTH_DIR}"
     dlog "${#HEALTHY[@]} of ${#CANDIDATES[@]} candidates answered; probing them for a blocklist."
+    ANSWERED_ALL="${HEALTHY[*]+${HEALTHY[*]}}"
+    if [[ "${DNS_ANSWERED_CACHE}" == "1" ]] && (( ${#HEALTHY[@]} > 0 )); then
+        dlog "Answered: ${HEALTHY[*]}"
+        printf '%s\n' ${HEALTHY[@]+"${HEALTHY[@]}"} > "${answered_file}.tmp" \
+            && mv "${answered_file}.tmp" "${answered_file}"
+    fi
 
     for res in ${HEALTHY[@]+"${HEALTHY[@]}"}; do
         if sink="$(resolver_sinkhole "${res}")" && [[ -n "${sink}" ]]; then
             KEPT="${KEPT}${KEPT:+ }${res}"; KEPT_N=$(( KEPT_N + 1 ))
             add_sinkholes "${sink}"
             dlog "Enforcing resolver ${res} -> sinkhole $(printf '%s' "${sink}" | tr '\n' ' ')"
+        elif [[ "${DNS_REFUSAL_BLOCK}" == "1" ]] && resolver_refuses "${res}"; then
+            KEPT="${KEPT}${KEPT:+ }${res}"; KEPT_N=$(( KEPT_N + 1 ))
+            dlog "Enforcing resolver ${res} -> refuses to resolve (no sinkhole address)."
         fi
         (( KEPT_N >= DNS_KEEP_RESOLVERS )) && break
     done
@@ -368,14 +498,36 @@ fi
 (( KEPT_N > 0 )) || bail "No ${ISO} resolver on the public list is enforcing a blocklist right now."
 
 # ---- Publish the session -----------------------------------------------------
+# DNS_SESSION_ENFORCING is always the proven subset -- the resolvers that were
+# observed handing out a sinkhole or withholding an address. DNS_SESSION_
+# RESOLVERS is what the scan actually queries, and with
+# DNS_SESSION_KEEP_ANSWERED=1 it widens to every resolver that replied.
+#
+# Those are deliberately separate. Cambodian ISPs do not enforce the same list
+# -- COGETEL withholds addresses that SEATEL resolves normally -- so querying
+# more of them finds more blocks, but they must NOT count toward the quorum:
+# requiring 2 of 3 to agree when only one enforces reports a blocked domain as
+# clean. lib.sh sizes the quorum from DNS_SESSION_ENFORCING for that reason.
+SESSION_RESOLVERS="${KEPT}"
+if [[ "${DNS_SESSION_KEEP_ANSWERED}" == "1" ]]; then
+    for _r in ${ANSWERED_ALL}; do
+        case " ${SESSION_RESOLVERS} " in
+            *" ${_r} "*) ;;
+            *) SESSION_RESOLVERS="${SESSION_RESOLVERS}${SESSION_RESOLVERS:+ }${_r}" ;;
+        esac
+    done
+fi
+
 {
     echo "# written by discover-resolvers.sh $(date '+%Y-%m-%d %H:%M:%S')"
     echo "DNS_SESSION_COUNTRY='${FETCH_COUNTRY}'"
     echo "DNS_SESSION_ISO='${ISO}'"
-    echo "DNS_SESSION_RESOLVERS='${KEPT}'"
+    echo "DNS_SESSION_RESOLVERS='${SESSION_RESOLVERS}'"
+    echo "DNS_SESSION_ENFORCING='${KEPT}'"
     echo "DNS_SESSION_SINKHOLES='${SINKHOLES}'"
     echo "DNS_SESSION_AT='$(date '+%Y-%m-%d %H:%M:%S')'"
 } > "${SESSION_FILE}.tmp"
 mv "${SESSION_FILE}.tmp" "${SESSION_FILE}"
 
-dlog "Session ready: country=${FETCH_COUNTRY} iso=${ISO} resolvers=${KEPT} sinkholes=${SINKHOLES}"
+dlog "Session ready: country=${FETCH_COUNTRY} iso=${ISO} resolvers=${SESSION_RESOLVERS} sinkholes=${SINKHOLES}"
+dlog "Enforcing subset (sizes the quorum): ${KEPT}"

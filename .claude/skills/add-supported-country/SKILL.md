@@ -95,6 +95,47 @@ code to `lib.sh` — and then map it to one of these two, never to a third label
 `reasonLabelOptions()` and the blacklist filter derive from this map, so they
 follow automatically.
 
+## Step 5 (sometimes): the country may not sinkhole at all
+
+MY and AU point a blocked name at a sinkhole ADDRESS, which is what
+`resolver_sinkhole()` tallies and what the whole learned-sinkhole design
+assumes. Cambodia does not — its resolvers simply hand back **no address** for
+a blocked name. Symptom: discovery bails every run with "No <iso> resolver on
+the public list is enforcing a blocklist right now", `DNS_SESSION_RESOLVERS`
+stays empty, and because that also leaves `PROXY_LOCAL_DNS_CHECK=0` the entire
+DNS stage is skipped — so no DNS guard ever runs, however it is configured.
+
+Four config knobs cover this, all defaulting off so MY/AU are untouched:
+
+| Knob | What it does |
+| --- | --- |
+| `DNS_REFUSAL_BLOCK=1` | count "replied, but gave no address" as a block (`dns_refused`) |
+| `DNS_EXTRA_RESOLVERS` | seed in-country resolvers public-dns.info does not list |
+| `DNS_SESSION_KEEP_ANSWERED=1` | query every answering resolver, not just proven enforcers |
+| `DNS_ANSWERED_CACHE=1` | log and remember which resolvers answered |
+
+Three things that cost real time when working this out:
+
+1. **Do not match on the response CODE.** The same resolver returned NXDOMAIN
+   for six of eight domains in one run and NOERROR with an empty answer
+   (NODATA) twenty minutes later. Test whether an ADDRESS came back, not which
+   rcode did, and never count a timeout — a dead resolver answers nothing for
+   everything and would convict the whole batch.
+2. **The enforcing resolver may not be on public-dns.info.** That list only
+   carries resolvers open to the whole internet; a regulator enforces on an
+   ISP's own recursive resolver. Cambodia's `203.189.130.131` (COGETEL
+   AS23673) is not listed, so discovery could only ever pick non-enforcing
+   candidates. Find one by hand (`nslookup <blocked-domain> <resolver>`) and
+   put it in `DNS_EXTRA_RESOLVERS`.
+3. **ISPs in one country run different lists.** Widening the session finds more
+   blocks, but non-enforcing resolvers must not size the quorum or a real block
+   reports clean on a 1-of-3 vote. `lib.sh` sizes it from
+   `DNS_SESSION_ENFORCING` and accepts either a proven enforcer or
+   `DNS_BLOCK_QUORUM` agreeing resolvers.
+
+Any new raw reason code still has to be mapped in `dmnbot` (step 4) or it
+displays as "Not Stable/Invalid Domain".
+
 ## Mandatory: verify the ASNs before declaring it done
 
 DataImpulse silently serves a different exit (or an empty body) when the
@@ -149,10 +190,6 @@ mixed in among the mobile ones.
 
 ## Optional follow-ups
 
-- `dmn-checker/blocked.py` — `TELCOS` maps `TELCO -> (country, asn)` for the
-  standalone probe. Add the new telcos there too. Its `COUNTRY_RESOLVERS` has no
-  entry for the new ISO, which is fine: it falls through to the HTTP stage.
-  Run `python3 dnscheck.py <iso>` to discover and cache the enforcing resolvers.
 - Switching an existing box's `FETCH_COUNTRY` leaves the previous country's
   `resolvers.session` in `WORK_DIR`. `DNS_SESSION_FOLLOWS_FETCH=1` (default)
   discards it on both sides — `lib.sh` refuses to apply it and
