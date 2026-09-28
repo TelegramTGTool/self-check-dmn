@@ -156,6 +156,17 @@ PROXY_SESSION_TTL=10
 #       "VIETTEL=__asn.38623"     # verified
 #       "AXIATA=__asn.45498"      # verified
 #   )
+
+# For Malayisia mobile carriers (FETCH_COUNTRY="Malaysia", __cr.my):
+#   TELCO_LIST=(CELCOM UMOBILE YES TM DIGI MAXIS)
+#   TELCO_PROXY_MAP=(
+#       "CELCOM=__asn.10030"
+#       "UMOBILE=__asn.38466"
+#       "YES=__asn.45960"
+#       "TM=__asn.4788"
+#       "DIGI=__asn.4818"
+#       "HOTLINK=__asn.9534"
+#   )
 # Do NOT use AS17926 (Telecom Cambodia): it is a fixed-line operator with no
 # exit in the MOBILE plan, so the gateway returns an empty body (9/9 probes),
 # proxy_health_check fails the control domain, and that telco's batch is
