@@ -42,6 +42,7 @@ FETCH_LIMIT=50
 # The checker probes from inside one country, so it must only be handed the
 # merchants registered for that country. Known values come from
 # config/merchants.php on the API host: Malaysia, Australia, Cambodia.
+# Also Singapore (see the commented __cr.sg telco preset further down).
 # Empty/unset = let the API use its own default (Malaysia).
 # Note the country filter runs BEFORE offset/limit, so each country has its
 # own pool numbered from 0 — don't carry offsets across countries.
@@ -156,6 +157,21 @@ PROXY_SESSION_TTL=10
 #       "VIETTEL=__asn.38623"     # verified
 #       "AXIATA=__asn.45498"      # verified
 #   )
+# For Singaporean mobile carriers (FETCH_COUNTRY="Singapore", __cr.sg):
+#   TELCO_LIST=(SINGTEL STARHUB M1 SIMBA)
+#   TELCO_PROXY_MAP=(
+#       "SINGTEL=__asn.45143"     # Singtel, verified 2026-09-29 (4/4)
+#       "STARHUB=__asn.4657"      # StarHub main AS, mobile + consumer (4/4)
+#       "M1=__asn.4773"           # PARTIAL: 5/10, one exit only, see below
+#       "SIMBA=__asn.4817"        # SIMBA, ex-TPG Singapore, verified (6/6)
+#   )
+# Measured 2026-09-29 through gw.dataimpulse.com:823 with ip-api; every exit
+# that answered echoed the ASN asked for. M1 (AS4773) answered 5/10 and every
+# success came from the single exit 119.56.16.190; the other 5 returned HTTP
+# 502 with an empty body, never a wrong ASN. Usable -- the PROXY_MAX_RETRIES
+# retries absorb most misses -- but expect gaps in M1's data.
+# Do NOT use AS17547 (M1 fixed-line): it has no exit in the MOBILE plan (HTTP
+# 503), the same failure as AS17926 below.
 
 # For Malayisia mobile carriers (FETCH_COUNTRY="Malaysia", __cr.my):
 #   TELCO_LIST=(CELCOM UMOBILE YES TM DIGI MAXIS)
@@ -171,6 +187,8 @@ PROXY_SESSION_TTL=10
 # exit in the MOBILE plan, so the gateway returns an empty body (9/9 probes),
 # proxy_health_check fails the control domain, and that telco's batch is
 # skipped (no wrong verdicts, just no data).
+# Likewise AS38600, Smart Axiata's second AS: no MOBILE-plan exit (HTTP 503,
+# measured 2026-09-29) -- keep AXIATA on AS45498.
 TELCO_PROXY_MAP=()
 
 # Timeouts for probes that go through the gateway. These are deliberately far

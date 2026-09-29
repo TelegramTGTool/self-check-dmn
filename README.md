@@ -82,6 +82,9 @@ Set `FETCH_COUNTRY` in `config.sh` to the country this box probes from
 `config/merchants.php` on the API host, and the merchants UI offers the same
 values per domain). Leaving it empty lets the API apply its own default,
 Malaysia.
+`Singapore` is also supported; `config.sh.example` carries its commented
+`__cr.sg` telco preset (SINGTEL, STARHUB, M1, SIMBA) with the measured ASN
+results.
 
 Adding a new country touches four places; see the `add-supported-country`
 skill in `.claude/skills/` for the checklist and the ASN-verification step.
