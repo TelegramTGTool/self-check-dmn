@@ -85,6 +85,8 @@ Malaysia.
 `Singapore` is also supported; `config.sh.example` carries its commented
 `__cr.sg` telco preset (SINGTEL, STARHUB, M1, SIMBA) with the measured ASN
 results.
+`Papua New Guinea` is too (quote it in `config.sh`, the name has spaces);
+see its commented `__cr.pg` preset.
 
 Adding a new country touches four places; see the `add-supported-country`
 skill in `.claude/skills/` for the checklist and the ASN-verification step.
